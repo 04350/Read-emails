@@ -5,7 +5,7 @@
  *
  * Routes:
  *   GET /pixel?id=<random-id>             records an open and returns a 1x1 GIF
- *   GET /events?token=<secret>            lists recorded events
+ *   GET /events (Authorization: Bearer <secret>) lists recorded events
  *   GET /health                           basic configuration check
  */
 const PIXEL = Uint8Array.from([
