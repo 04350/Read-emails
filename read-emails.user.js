@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — מעקב פתיחת מיילים ב-Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.0
+// @version      0.1.1
 // @description  מוסיף פיקסל מעקב למיילים יוצאים ב-Gmail ומציג אירועי פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_getValue
@@ -21,7 +21,6 @@
 
   const installed = () => WORKER_URL.startsWith('https://') && !WORKER_URL.includes('PASTE_');
   const tokenReady = () => DASHBOARD_TOKEN && !DASHBOARD_TOKEN.includes('PASTE_');
-  const seen = new WeakSet();
 
   function toast(message) {
     let el = document.getElementById('read-emails-toast');
@@ -83,7 +82,12 @@
       url: WORKER_URL.replace(/\/$/, '') + '/events',
       headers: { 'Authorization': 'Bearer ' + DASHBOARD_TOKEN },
       onload: (r) => {
-        if (r.status !== 200) { toast('לא ניתן לטעון אירועים (HTTP ' + r.status + ').'); return; }
+        if (r.status !== 200) {
+          // Include a short, sanitized response preview to help diagnose proxy/filter errors.
+          const detail = String(r.responseText || '').replace(/[\\r\\n\\t]+/g, ' ').trim().slice(0, 120);
+          toast('לא ניתן לטעון אירועים (HTTP ' + r.status + ')' + (detail ? ': ' + detail : '.'));
+          return;
+        }
         let data;
         try { data = JSON.parse(r.responseText); } catch { toast('תשובת השרת אינה תקינה.'); return; }
         const local = new Map((GM_getValue('trackedMessages', [])).map(x => [x.id, x]));
