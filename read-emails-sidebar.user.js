@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.2
+// @version      0.1.3
 // @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
@@ -21,6 +23,7 @@
   const BUTTON_ID = 'read-emails-sidebar-button';
   const PANEL_ID = 'read-emails-sidebar-panel';
   const BADGE_ATTR = 'data-read-emails-badge';
+  const ROW_BADGE_ATTR = 'data-read-emails-row-badge';
   let eventCache = [];
   let lastFetch = 0;
   let fetchInProgress = false;
@@ -51,6 +54,8 @@
       #${PANEL_ID} .re-time{font-size:13px;color:#3c4043;margin:4px 0}
       [${BADGE_ATTR}]{display:inline-flex;align-items:center;gap:4px;margin:5px 6px 5px 0;padding:4px 8px;border-radius:6px;border:1px solid #dadce0;background:#f8f9fa;color:#3c4043;font:12px Arial,sans-serif;direction:rtl;vertical-align:middle;position:relative;z-index:2}
       [${BADGE_ATTR}][data-opened="yes"]{background:#e6f4ea;border-color:#ceead6;color:#137333}
+      [${ROW_BADGE_ATTR}]{display:inline-flex;align-items:center;margin:0 8px;padding:3px 7px;border-radius:6px;border:1px solid #dadce0;background:#f8f9fa;color:#3c4043;font:12px Arial,sans-serif;direction:rtl;vertical-align:middle;white-space:nowrap}
+      [${ROW_BADGE_ATTR}][data-opened="yes"]{background:#e6f4ea;border-color:#ceead6;color:#137333}
     `;
     document.head.appendChild(style);
   }
@@ -120,6 +125,118 @@
     });
   }
 
+  function getTrackedMessages() {
+    try {
+      const items = GM_getValue('readEmailsSidebarTrackedMessages', []);
+      return Array.isArray(items) ? items : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function normalizeSubject(value) {
+    return String(value || '')
+      .replace(/\s+\(\d+\)$/, '')
+      .replace(/^(?:(?:re|fw|fwd):\s*|העברה:\s*|תגובה:\s*)+/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase('he-IL');
+  }
+
+  function setBadgeStatus(badge, id) {
+    const count = eventCache.filter((ev) => ev.id === id).length;
+    const label = eventsState === 'ready'
+      ? (count === 0 ? 'לא נפתח' : 'נפתח ' + count)
+      : (eventsState === 'error' ? 'לא ניתן לבדוק' : 'בודק…');
+    const opened = eventsState === 'ready' && count > 0 ? 'yes' : 'no';
+    if (badge.dataset.opened !== opened) badge.dataset.opened = opened;
+    if (badge.textContent !== label) badge.textContent = label;
+    const title = eventsState === 'ready'
+      ? (count ? 'נרשמו ' + count + ' אירועי פתיחה בשרת' : 'לא נרשם אירוע פתיחה בשרת')
+      : (eventsState === 'error' ? 'השרת אינו זמין כרגע; אי אפשר לקבוע אם נפתח' : 'ממתין לנתוני השרת');
+    if (badge.title !== title) badge.title = title;
+  }
+
+  function captureSentMessageMetadata(compose, body, subject, recipients, attempt = 0) {
+    if (!compose || !body) return;
+    let id = null;
+    for (const img of body.querySelectorAll('img')) {
+      id = extractTrackingId(img);
+      if (id) break;
+    }
+    if (!id && attempt < 6) {
+      setTimeout(() => captureSentMessageMetadata(compose, body, subject, recipients, attempt + 1), 60);
+      return;
+    }
+    if (!id || !subject) return;
+    const items = getTrackedMessages();
+    const record = {
+      id,
+      subject: String(subject).trim(),
+      recipients: Array.isArray(recipients) ? recipients : [],
+      createdAt: new Date().toISOString()
+    };
+    const next = items.filter((item) => item.id !== id);
+    next.push(record);
+    try { GM_setValue('readEmailsSidebarTrackedMessages', next.slice(-1000)); } catch {}
+    renderListBadges();
+  }
+
+  function hookSendClicks() {
+    document.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const button = target?.closest('div[role="button"],button');
+      if (!button) return;
+      const label = ((button.getAttribute('aria-label') || '') + ' ' + (button.innerText || '')).trim().toLowerCase();
+      if (!/(^|\b)send\b|שליחה|שלח/.test(label)) return;
+      const compose = button.closest('[role="dialog"]') || button.closest('form');
+      if (!compose) return;
+      const body = compose.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[contenteditable="true"][g_editable="true"]');
+      const subjectInput = compose.querySelector('input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]');
+      const subject = subjectInput?.value || '';
+      const recipients = [...compose.querySelectorAll('[name="to"] [email],[name="to"] [data-hovercard-id],[name="to"] input')]
+        .map((el) => el.getAttribute('email') || el.getAttribute('data-hovercard-id') || el.value || el.textContent || '')
+        .map((value) => String(value).trim())
+        .filter(Boolean);
+      // Run after the other click handlers so the original script has time to insert its tracking pixel.
+      Promise.resolve().then(() => captureSentMessageMetadata(compose, body, subject, recipients));
+    }, true);
+  }
+
+  function renderListBadges() {
+    const tracked = getTrackedMessages();
+    if (!tracked.length) return;
+    const rows = document.querySelectorAll('tr.zA');
+    rows.forEach((row) => {
+      const subjectNode = row.querySelector('.bog, .bqe');
+      if (!subjectNode) return;
+      const subject = normalizeSubject(subjectNode.textContent || subjectNode.innerText);
+      if (!subject) return;
+      const candidates = tracked.filter((item) => normalizeSubject(item.subject) === subject);
+      if (!candidates.length) return;
+
+      // If several tracked messages share a subject, use the recipient when Gmail shows a matching name/email.
+      const rowText = String(row.innerText || row.textContent || '').toLocaleLowerCase('he-IL');
+      const withRecipient = candidates.filter((item) =>
+        (item.recipients || []).some((recipient) => recipient && rowText.includes(String(recipient).toLocaleLowerCase('he-IL')))
+      );
+      let chosen;
+      if (candidates.length === 1) chosen = candidates[0];
+      else if (withRecipient.length) chosen = withRecipient.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0];
+      else return; // Avoid attaching a possibly incorrect count to a different email with the same subject.
+
+      let badge = row.querySelector('[' + ROW_BADGE_ATTR + ']');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.setAttribute(ROW_BADGE_ATTR, chosen.id);
+        subjectNode.insertAdjacentElement('afterend', badge);
+      } else if (badge.getAttribute(ROW_BADGE_ATTR) !== chosen.id) {
+        badge.setAttribute(ROW_BADGE_ATTR, chosen.id);
+      }
+      setBadgeStatus(badge, chosen.id);
+    });
+  }
+
   function extractTrackingId(img) {
     const candidates = ['src', 'data-src', 'data-original-src', 'srcset']
       .map((name) => img.getAttribute(name) || '')
@@ -162,7 +279,6 @@
       const container = messageContainer(img);
       if (!container) return;
       let badge = container.querySelector('[' + BADGE_ATTR + '="' + id + '"]');
-      const count = eventCache.filter((ev) => ev.id === id).length;
       if (!badge) {
         badge = document.createElement('span');
         badge.setAttribute(BADGE_ATTR, id);
@@ -170,16 +286,7 @@
         if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(badge, anchor.nextSibling);
         else container.appendChild(badge);
       }
-      const label = eventsState === 'ready'
-        ? (count === 0 ? 'לא נפתח' : 'נפתח ' + count)
-        : (eventsState === 'error' ? 'לא ניתן לבדוק' : 'בודק…');
-      const opened = eventsState === 'ready' && count > 0 ? 'yes' : 'no';
-      if (badge.dataset.opened !== opened) badge.dataset.opened = opened;
-      if (badge.textContent !== label) badge.textContent = label;
-      const title = eventsState === 'ready'
-        ? (count ? 'נרשמו ' + count + ' אירועי פתיחה בשרת' : 'לא נרשם אירוע פתיחה בשרת')
-        : (eventsState === 'error' ? 'השרת אינו זמין כרגע; אי אפשר לקבוע אם נפתח' : 'ממתין לנתוני השרת');
-      if (badge.title !== title) badge.title = title;
+      setBadgeStatus(badge, id);
     });
   }
 
@@ -260,14 +367,17 @@
     await getEvents();
     // Render even when the server request fails, so the badge can show 'לא ניתן לבדוק'.
     renderBadges();
+    renderListBadges();
   }
 
   // Gmail redraws its interface dynamically, so re-check the page as it changes.
   const observer = new MutationObserver(() => {
     buildSideButton();
     renderBadges();
+    renderListBadges();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
+  hookSendClicks();
   refresh();
   setInterval(refresh, 30000);
 })();
