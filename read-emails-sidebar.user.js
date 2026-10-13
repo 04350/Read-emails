@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.0
+// @version      0.1.1
 // @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -36,9 +36,9 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${BUTTON_ID}{width:42px;height:42px;border:0;border-radius:50%;margin:8px auto;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002}
+      #${BUTTON_ID}{position:fixed;left:12px;top:320px;width:42px;height:42px;border:0;border-radius:50%;margin:0;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002;z-index:999998}
       #${BUTTON_ID}:hover{background:#d2e3fc}
-      #${PANEL_ID}{position:fixed;top:12px;right:76px;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
+      #${PANEL_ID}{position:fixed;top:320px;left:64px;right:auto;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
       #${PANEL_ID} *{box-sizing:border-box}
       #${PANEL_ID} .re-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
       #${PANEL_ID} .re-title{font-size:17px;font-weight:700}
@@ -47,7 +47,7 @@
       #${PANEL_ID} .re-item{border-top:1px solid #e8eaed;padding:10px 0}
       #${PANEL_ID} .re-item-title{font-weight:700;margin-bottom:5px;overflow-wrap:anywhere}
       #${PANEL_ID} .re-time{font-size:13px;color:#3c4043;margin:4px 0}
-      [${BADGE_ATTR}]{display:inline-flex;align-items:center;gap:4px;margin:5px 0 0 6px;padding:3px 7px;border-radius:6px;border:1px solid #dadce0;background:#f8f9fa;color:#3c4043;font:12px Arial,sans-serif;direction:rtl;vertical-align:middle}
+      [${BADGE_ATTR}]{display:inline-flex;align-items:center;gap:4px;margin:5px 6px 5px 0;padding:4px 8px;border-radius:6px;border:1px solid #dadce0;background:#f8f9fa;color:#3c4043;font:12px Arial,sans-serif;direction:rtl;vertical-align:middle;position:relative;z-index:2}
       [${BADGE_ATTR}][data-opened="yes"]{background:#e6f4ea;border-color:#ceead6;color:#137333}
     `;
     document.head.appendChild(style);
@@ -113,51 +113,67 @@
     });
   }
 
-  function trackedIdsIn(element) {
-    const ids = new Set();
-    element.querySelectorAll('img[src*="/pixel?id="]').forEach((img) => {
+  function extractTrackingId(img) {
+    const candidates = ['src', 'data-src', 'data-original-src', 'srcset']
+      .map((name) => img.getAttribute(name) || '')
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      let value = candidate;
+      for (let i = 0; i < 3; i++) {
+        const match = value.match(/(?:\/pixel\?id=|pixel%3fid%3d|pixel%3Fid%3D)([a-f0-9-]{20,80})/i);
+        if (match) return match[1];
+        try {
+          const decoded = decodeURIComponent(value.replace(/&amp;/g, '&'));
+          if (decoded === value) break;
+          value = decoded;
+        } catch { break; }
+      }
       try {
-        const url = new URL(img.src, location.href);
+        const url = new URL(candidate.split(/\s+/)[0], location.href);
         const id = url.searchParams.get('id');
-        if (id) ids.add(id);
+        if (id && /^[a-f0-9-]{20,80}$/i.test(id)) return id;
       } catch {}
-    });
-    return [...ids];
+    }
+    return null;
   }
 
   function messageContainer(img) {
     return img.closest('[data-message-id]') ||
       img.closest('.adn') ||
+      img.closest('.h7') ||
+      img.closest('.gs') ||
       img.closest('[role="listitem"]') ||
-      img.closest('div[role="main"]') ||
+      img.parentElement?.parentElement ||
       img.parentElement;
   }
 
   function renderBadges() {
-    document.querySelectorAll('img[src*="/pixel?id="]').forEach((img) => {
-      const id = (() => {
-        try { return new URL(img.src, location.href).searchParams.get('id'); } catch { return null; }
-      })();
+    // Gmail may proxy or encode remote image URLs, so inspect both direct and encoded attributes.
+    document.querySelectorAll('img').forEach((img) => {
+      const id = extractTrackingId(img);
       if (!id) return;
       const container = messageContainer(img);
-      if (!container || container.querySelector('[' + BADGE_ATTR + '="' + id + '"]')) return;
+      if (!container) return;
+      let badge = container.querySelector('[' + BADGE_ATTR + '="' + id + '"]');
       const count = eventCache.filter((ev) => ev.id === id).length;
-      const badge = document.createElement('span');
-      badge.setAttribute(BADGE_ATTR, id);
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.setAttribute(BADGE_ATTR, id);
+        const anchor = img.closest('span') || img.parentElement;
+        if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(badge, anchor.nextSibling);
+        else container.appendChild(badge);
+      }
       badge.dataset.opened = count ? 'yes' : 'no';
-      badge.textContent = count ? 'נפתח ' + count + ' פעמים' : 'טרם נרשם שנפתח';
-      badge.title = 'מספר אירועי הפתיחה שנרשמו בשרת';
-      const anchor = img.closest('span') || img.parentElement;
-      if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(badge, anchor.nextSibling);
-      else container.appendChild(badge);
+      badge.textContent = count === 0 ? 'לא נפתח' : count === 1 ? 'נפתח פעם אחת' : 'נפתח ' + count + ' פעמים';
+      badge.title = count
+        ? 'נרשמו ' + count + ' אירועי פתיחה בשרת'
+        : 'עדיין לא נרשם אירוע פתיחה בשרת';
     });
   }
 
   function buildSideButton() {
     if (document.getElementById(BUTTON_ID)) return;
-    // Gmail's right-side app rail; use a fallback fixed position if the rail is not found.
-    const rail = document.querySelector('header')?.parentElement?.querySelector('[aria-label*="Google apps"],[aria-label*="אפליקציות"]')?.parentElement
-      || document.querySelector('div[role="navigation"]');
+    // Hebrew Gmail is RTL; keep the control on the opposite side, below the top toolbar.
     const button = document.createElement('button');
     button.id = BUTTON_ID;
     button.type = 'button';
@@ -165,12 +181,8 @@
     button.setAttribute('aria-label', 'זמני פתיחת מיילים');
     button.textContent = '✓';
     button.addEventListener('click', togglePanel);
-    if (rail) {
-      rail.appendChild(button);
-    } else {
-      Object.assign(button.style, { position: 'fixed', right: '12px', top: '220px', zIndex: '999998' });
-      document.body.appendChild(button);
-    }
+    Object.assign(button.style, { position: 'fixed', left: '12px', top: '320px', zIndex: '999998' });
+    document.body.appendChild(button);
   }
 
   function togglePanel() {
