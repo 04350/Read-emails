@@ -271,11 +271,22 @@
       img.parentElement;
   }
 
+  function rememberVisibleTrackedMessage(id) {
+    const known = getTrackedMessages();
+    if (known.some((item) => item.id === id)) return;
+    const subjectNode = document.querySelector('h2.hP, h2[data-thread-perm-id]');
+    const subject = String(subjectNode?.textContent || subjectNode?.innerText || '').trim();
+    if (!subject) return;
+    const record = { id, subject, recipients: [], createdAt: new Date().toISOString() };
+    try { GM_setValue('readEmailsSidebarTrackedMessages', [...known, record].slice(-1000)); } catch {}
+  }
+
   function renderBadges() {
     // Gmail may proxy or encode remote image URLs, so inspect both direct and encoded attributes.
     document.querySelectorAll('img').forEach((img) => {
       const id = extractTrackingId(img);
       if (!id) return;
+      rememberVisibleTrackedMessage(id);
       const container = messageContainer(img);
       if (!container) return;
       let badge = container.querySelector('[' + BADGE_ATTR + '="' + id + '"]');
