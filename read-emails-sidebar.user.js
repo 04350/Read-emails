@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.1
+// @version      0.1.2
 // @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -24,6 +24,8 @@
   let eventCache = [];
   let lastFetch = 0;
   let fetchInProgress = false;
+  // ready = server data loaded; error = server could not be reached (do not falsely claim unopened).
+  let eventsState = 'loading';
 
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
@@ -36,9 +38,9 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${BUTTON_ID}{position:fixed;left:12px;top:320px;width:42px;height:42px;border:0;border-radius:50%;margin:0;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002;z-index:999998}
+      #${BUTTON_ID}{position:fixed;left:12px;top:350px;width:42px;height:42px;border:0;border-radius:50%;margin:0;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002;z-index:999998}
       #${BUTTON_ID}:hover{background:#d2e3fc}
-      #${PANEL_ID}{position:fixed;top:320px;left:64px;right:auto;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
+      #${PANEL_ID}{position:fixed;top:350px;left:64px;right:auto;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
       #${PANEL_ID} *{box-sizing:border-box}
       #${PANEL_ID} .re-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
       #${PANEL_ID} .re-title{font-size:17px;font-weight:700}
@@ -74,6 +76,7 @@
   function getEvents(force = false) {
     return new Promise((resolve) => {
       if (!configured()) {
+        eventsState = 'error';
         resolve({ ok: false, error: 'יש להגדיר WORKER_URL ואת DASHBOARD_TOKEN בקוד הסקריפט.' });
         return;
       }
@@ -94,19 +97,23 @@
           fetchInProgress = false;
           lastFetch = Date.now();
           if (response.status !== 200) {
+            eventsState = 'error';
             resolve({ ok: false, error: 'השרת החזיר שגיאה ' + response.status + '. ייתכן שהגישה נחסמת על ידי הסינון.' });
             return;
           }
           try {
             const data = JSON.parse(response.responseText);
             eventCache = Array.isArray(data.events) ? data.events : [];
+            eventsState = 'ready';
             resolve({ ok: true, events: eventCache });
           } catch {
+            eventsState = 'error';
             resolve({ ok: false, error: 'התקבלה תשובה לא תקינה מהשרת.' });
           }
         },
         onerror: () => {
           fetchInProgress = false;
+          eventsState = 'error';
           resolve({ ok: false, error: 'לא ניתן להתחבר לשרת. בדוק אם הגישה אליו מאושרת.' });
         }
       });
@@ -163,11 +170,16 @@
         if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(badge, anchor.nextSibling);
         else container.appendChild(badge);
       }
-      badge.dataset.opened = count ? 'yes' : 'no';
-      badge.textContent = count === 0 ? 'לא נפתח' : count === 1 ? 'נפתח פעם אחת' : 'נפתח ' + count + ' פעמים';
-      badge.title = count
-        ? 'נרשמו ' + count + ' אירועי פתיחה בשרת'
-        : 'עדיין לא נרשם אירוע פתיחה בשרת';
+      const label = eventsState === 'ready'
+        ? (count === 0 ? 'לא נפתח' : 'נפתח ' + count)
+        : (eventsState === 'error' ? 'לא ניתן לבדוק' : 'בודק…');
+      const opened = eventsState === 'ready' && count > 0 ? 'yes' : 'no';
+      if (badge.dataset.opened !== opened) badge.dataset.opened = opened;
+      if (badge.textContent !== label) badge.textContent = label;
+      const title = eventsState === 'ready'
+        ? (count ? 'נרשמו ' + count + ' אירועי פתיחה בשרת' : 'לא נרשם אירוע פתיחה בשרת')
+        : (eventsState === 'error' ? 'השרת אינו זמין כרגע; אי אפשר לקבוע אם נפתח' : 'ממתין לנתוני השרת');
+      if (badge.title !== title) badge.title = title;
     });
   }
 
@@ -181,7 +193,7 @@
     button.setAttribute('aria-label', 'זמני פתיחת מיילים');
     button.textContent = '✓';
     button.addEventListener('click', togglePanel);
-    Object.assign(button.style, { position: 'fixed', left: '12px', top: '320px', zIndex: '999998' });
+    Object.assign(button.style, { position: 'fixed', left: '12px', top: '350px', zIndex: '999998' });
     document.body.appendChild(button);
   }
 
@@ -245,14 +257,15 @@
   async function refresh() {
     addStyles();
     buildSideButton();
-    const result = await getEvents();
-    if (result.ok) renderBadges();
+    await getEvents();
+    // Render even when the server request fails, so the badge can show 'לא ניתן לבדוק'.
+    renderBadges();
   }
 
   // Gmail redraws its interface dynamically, so re-check the page as it changes.
   const observer = new MutationObserver(() => {
     buildSideButton();
-    if (eventCache.length) renderBadges();
+    renderBadges();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   refresh();
