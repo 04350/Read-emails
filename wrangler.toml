@@ -1,0 +1,8 @@
+name = "read-emails"
+main = "worker.js"
+compatibility_date = "2026-10-13"
+
+# After creating a KV namespace, uncomment and replace the ID below.
+# [[kv_namespaces]]
+# binding = "TRACKING_KV"
+# id = "REPLACE_WITH_KV_NAMESPACE_ID"
