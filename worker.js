@@ -40,7 +40,7 @@ export default {
       return new Response(PIXEL, { headers: { "Content-Type": "image/gif", "Content-Length": String(PIXEL.length), "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" } });
     }
     if (url.pathname === "/events") {
-      const token = url.searchParams.get("token") || "";
+      const token = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
       if (!env.DASHBOARD_TOKEN || token !== env.DASHBOARD_TOKEN) return response("Unauthorized", 401);
       if (!env.TRACKING_KV) return response(JSON.stringify({ error: "Missing TRACKING_KV binding" }), 500, { "Content-Type": "application/json; charset=utf-8" });
       const events = [];
