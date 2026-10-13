@@ -80,7 +80,8 @@
     if (!installed() || !tokenReady()) { toast('הגדר WORKER_URL ואת DASHBOARD_TOKEN בקוד המשתמש.'); return; }
     GM_xmlhttpRequest({
       method: 'GET',
-      url: WORKER_URL.replace(/\/$/, '') + '/events?token=' + encodeURIComponent(DASHBOARD_TOKEN),
+      url: WORKER_URL.replace(/\/$/, '') + '/events',
+      headers: { 'Authorization': 'Bearer ' + DASHBOARD_TOKEN },
       onload: (r) => {
         if (r.status !== 200) { toast('לא ניתן לטעון אירועים (HTTP ' + r.status + ').'); return; }
         let data;
