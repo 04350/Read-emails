@@ -247,7 +247,10 @@
   }
 
   function renderListBadges() {
-    if (!isSentFolder()) return;
+    if (!isSentFolder()) {
+      document.querySelectorAll('[' + ROW_BADGE_ATTR + ']').forEach((badge) => badge.remove());
+      return;
+    }
     document.querySelectorAll('tr.zA').forEach((row) => {
       const subjectNode = rowSubjectNode(row);
       if (!subjectNode) return;
@@ -284,6 +287,7 @@
   }
 
   function renderContextForRow(row, autoOpen = true) {
+    if (!isSentFolder()) return;
     activeRow = row;
     const record = recordForRow(row);
     if (!record) {
@@ -373,6 +377,7 @@
 
   function attachRowHover() {
     document.addEventListener('mouseover', (event) => {
+      if (!isSentFolder()) return;
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       const row = target?.closest('tr.zA');
       if (!row || row === activeRow) return;
@@ -493,6 +498,29 @@
   }
 
   function togglePanel() {
+    if (!isSentFolder()) {
+      const oldPanel = document.getElementById(PANEL_ID);
+      if (oldPanel) oldPanel.remove();
+      const panel = createPanel();
+      panel.replaceChildren();
+      const head = document.createElement('div');
+      head.className = 're-head';
+      const title = document.createElement('div');
+      title.className = 're-title';
+      title.textContent = 'מעקב פתיחת מיילים';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 're-close';
+      close.textContent = 'סגירה';
+      close.addEventListener('click', () => panel.remove());
+      head.append(title, close);
+      panel.appendChild(head);
+      const message = document.createElement('p');
+      message.className = 're-muted';
+      message.textContent = 'נתוני מעקב מוצגים רק בתיקיית "נשלח", אצל מי ששלח את המייל.';
+      panel.appendChild(message);
+      return;
+    }
     const existing = document.getElementById(PANEL_ID);
     if (existing) {
       existing.remove();
