@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.3
+// @version      0.1.4
 // @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -29,6 +29,9 @@
   let fetchInProgress = false;
   // ready = server data loaded; error = server could not be reached (do not falsely claim unopened).
   let eventsState = 'loading';
+  let activeRow = null;
+  let activeRecord = null;
+  let hoverUpdateCounter = 0;
 
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
@@ -158,21 +161,29 @@
   }
 
   function captureSentMessageMetadata(compose, body, subject, recipients, attempt = 0) {
-    if (!compose || !body) return;
+    if (!compose) return;
+    const bodyNow = body || compose.querySelector(
+      'div[aria-label="Message Body"][contenteditable="true"],div[contenteditable="true"][g_editable="true"],div[contenteditable="true"]'
+    );
+    const subjectNow = String(subject || compose.querySelector('input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]')?.value || '').trim();
+
     let id = null;
-    for (const img of body.querySelectorAll('img')) {
-      id = extractTrackingId(img);
-      if (id) break;
+    if (bodyNow) {
+      for (const img of bodyNow.querySelectorAll('img')) {
+        id = extractTrackingId(img);
+        if (id) break;
+      }
     }
-    if (!id && attempt < 6) {
-      setTimeout(() => captureSentMessageMetadata(compose, body, subject, recipients, attempt + 1), 60);
+    if ((!id || !subjectNow) && attempt < 12) {
+      setTimeout(() => captureSentMessageMetadata(compose, bodyNow, subjectNow, recipients, attempt + 1), 100);
       return;
     }
-    if (!id || !subject) return;
+    if (!id || !subjectNow) return;
+
     const items = getTrackedMessages();
     const record = {
       id,
-      subject: String(subject).trim(),
+      subject: subjectNow,
       recipients: Array.isArray(recipients) ? recipients : [],
       createdAt: new Date().toISOString()
     };
@@ -180,6 +191,7 @@
     next.push(record);
     try { GM_setValue('readEmailsSidebarTrackedMessages', next.slice(-1000)); } catch {}
     renderListBadges();
+    if (activeRow) renderContextForRow(activeRow, false);
   }
 
   function hookSendClicks() {
@@ -188,54 +200,181 @@
       const button = target?.closest('div[role="button"],button');
       if (!button) return;
       const label = ((button.getAttribute('aria-label') || '') + ' ' + (button.innerText || '')).trim().toLowerCase();
-      if (!/(^|\b)send\b|שליחה|שלח/.test(label)) return;
+      if (!/(send|שליחה|שלח)/i.test(label)) return;
       const compose = button.closest('[role="dialog"]') || button.closest('form');
       if (!compose) return;
-      const body = compose.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[contenteditable="true"][g_editable="true"]');
+      const body = compose.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[contenteditable="true"][g_editable="true"], div[contenteditable="true"]');
       const subjectInput = compose.querySelector('input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]');
       const subject = subjectInput?.value || '';
       const recipients = [...compose.querySelectorAll('[name="to"] [email],[name="to"] [data-hovercard-id],[name="to"] input')]
         .map((el) => el.getAttribute('email') || el.getAttribute('data-hovercard-id') || el.value || el.textContent || '')
         .map((value) => String(value).trim())
         .filter(Boolean);
-      // Run after the other click handlers so the original script has time to insert its tracking pixel.
-      Promise.resolve().then(() => captureSentMessageMetadata(compose, body, subject, recipients));
+      // Retry after Gmail and the original tracking script have updated the message body.
+      setTimeout(() => captureSentMessageMetadata(compose, body, subject, recipients), 0);
     }, true);
   }
 
+  function rowSubjectNode(row) {
+    return row.querySelector('.bog, .bqe, [data-thread-id] .bog, .y6 span');
+  }
+
+  function recordForRow(row) {
+    const subjectNode = rowSubjectNode(row);
+    if (!subjectNode) return null;
+    const subject = normalizeSubject(subjectNode.textContent || subjectNode.innerText);
+    if (!subject) return null;
+
+    const candidates = getTrackedMessages().filter((item) => normalizeSubject(item.subject) === subject);
+    if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const rowText = String(row.innerText || row.textContent || '').toLocaleLowerCase('he-IL');
+    const byRecipient = candidates.filter((item) =>
+      (item.recipients || []).some((recipient) =>
+        recipient && rowText.includes(String(recipient).toLocaleLowerCase('he-IL'))
+      )
+    );
+    if (byRecipient.length === 1) return byRecipient[0];
+    if (byRecipient.length > 1) return byRecipient.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0];
+    return null;
+  }
+
   function renderListBadges() {
-    const tracked = getTrackedMessages();
-    if (!tracked.length) return;
-    const rows = document.querySelectorAll('tr.zA');
-    rows.forEach((row) => {
-      const subjectNode = row.querySelector('.bog, .bqe');
+    document.querySelectorAll('tr.zA').forEach((row) => {
+      const subjectNode = rowSubjectNode(row);
       if (!subjectNode) return;
-      const subject = normalizeSubject(subjectNode.textContent || subjectNode.innerText);
-      if (!subject) return;
-      const candidates = tracked.filter((item) => normalizeSubject(item.subject) === subject);
-      if (!candidates.length) return;
-
-      // If several tracked messages share a subject, use the recipient when Gmail shows a matching name/email.
-      const rowText = String(row.innerText || row.textContent || '').toLocaleLowerCase('he-IL');
-      const withRecipient = candidates.filter((item) =>
-        (item.recipients || []).some((recipient) => recipient && rowText.includes(String(recipient).toLocaleLowerCase('he-IL')))
-      );
-      let chosen;
-      if (candidates.length === 1) chosen = candidates[0];
-      else if (withRecipient.length) chosen = withRecipient.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0];
-      else return; // Avoid attaching a possibly incorrect count to a different email with the same subject.
-
+      const record = recordForRow(row);
       let badge = row.querySelector('[' + ROW_BADGE_ATTR + ']');
+
+      if (!record) {
+        if (badge && !getTrackedMessages().some((item) => normalizeSubject(item.subject) === normalizeSubject(subjectNode.textContent || subjectNode.innerText))) {
+          badge.remove();
+        }
+        return;
+      }
+
       if (!badge) {
         badge = document.createElement('span');
-        badge.setAttribute(ROW_BADGE_ATTR, chosen.id);
+        badge.setAttribute(ROW_BADGE_ATTR, record.id);
         subjectNode.insertAdjacentElement('afterend', badge);
-      } else if (badge.getAttribute(ROW_BADGE_ATTR) !== chosen.id) {
-        badge.setAttribute(ROW_BADGE_ATTR, chosen.id);
+      } else if (badge.getAttribute(ROW_BADGE_ATTR) !== record.id) {
+        badge.setAttribute(ROW_BADGE_ATTR, record.id);
       }
-      setBadgeStatus(badge, chosen.id);
+      setBadgeStatus(badge, record.id);
     });
   }
+
+  function createPanel() {
+    let panel = document.getElementById(PANEL_ID);
+    if (panel) return panel;
+    panel = document.createElement('aside');
+    panel.id = PANEL_ID;
+    panel.innerHTML = '<div class="re-head"><div class="re-title">מעקב פתיחת מיילים</div><button class="re-close" type="button">סגירה</button></div><div class="re-muted">העבר את העכבר מעל הודעה שנשלחה כדי לראות את נתוני הפתיחה שלה.</div>';
+    panel.querySelector('.re-close').addEventListener('click', () => panel.remove());
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function renderContextForRow(row, autoOpen = true) {
+    activeRow = row;
+    const record = recordForRow(row);
+    if (!record) {
+      activeRecord = null;
+      const currentPanel = document.getElementById(PANEL_ID);
+      if (currentPanel && !autoOpen) {
+        currentPanel.querySelector('.re-muted')?.remove();
+        const message = document.createElement('p');
+        message.className = 're-muted';
+        message.textContent = 'לא נמצאו פרטי מעקב למייל הזה. ודא שנשלח עם פיקסל מעקב; אם נושא המייל חוזר על עצמו, ייתכן שלא ניתן לזהותו בוודאות.';
+        currentPanel.appendChild(message);
+      }
+      return;
+    }
+    activeRecord = record;
+    const panel = document.getElementById(PANEL_ID) || (autoOpen ? createPanel() : null);
+    if (!panel) return;
+    renderContextRecord(panel, record);
+  }
+
+  function renderContextRecord(panel, record) {
+    const requestId = ++hoverUpdateCounter;
+    panel.replaceChildren();
+
+    const head = document.createElement('div');
+    head.className = 're-head';
+    const title = document.createElement('div');
+    title.className = 're-title';
+    title.textContent = 'פרטי פתיחה';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 're-close';
+    close.textContent = 'סגירה';
+    close.addEventListener('click', () => panel.remove());
+    head.append(title, close);
+    panel.appendChild(head);
+
+    const subject = document.createElement('div');
+    subject.className = 're-item-title';
+    subject.textContent = record.subject || 'מייל שנשלח';
+    panel.appendChild(subject);
+
+    const status = document.createElement('p');
+    status.className = 're-muted';
+    status.textContent = eventsState === 'ready' ? 'מחשב נתוני פתיחה…' :
+      (eventsState === 'error' ? 'לא ניתן להתחבר כרגע לשרת כדי לבדוק פתיחות.' : 'טוען נתוני פתיחה…');
+    panel.appendChild(status);
+
+    getEvents(true).then((result) => {
+      if (!panel.isConnected || requestId !== hoverUpdateCounter) return;
+      status.remove();
+
+      if (!result.ok) {
+        const error = document.createElement('p');
+        error.className = 're-muted';
+        error.textContent = result.error;
+        panel.appendChild(error);
+        return;
+      }
+
+      const opens = eventCache.filter((event) => event.id === record.id)
+        .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
+      const count = document.createElement('p');
+      count.className = 're-muted';
+      count.textContent = opens.length === 0 ? 'לא נרשמה פתיחה' : 'נפתח ' + opens.length;
+      panel.appendChild(count);
+
+      if (opens.length) {
+        const label = document.createElement('div');
+        label.className = 're-muted';
+        label.textContent = 'זמני הפתיחה שנרשמו:';
+        panel.appendChild(label);
+        opens.slice(0, 12).forEach((event) => {
+          const line = document.createElement('div');
+          line.className = 're-time';
+          const date = new Date(event.openedAt);
+          line.textContent = Number.isNaN(date.getTime()) ? 'זמן לא ידוע' : date.toLocaleString('he-IL');
+          panel.appendChild(line);
+        });
+      }
+      const note = document.createElement('p');
+      note.className = 're-muted';
+      note.textContent = 'ייתכן שחלק מהאירועים נוצרו מסריקות אבטחה או טעינת תמונות אוטומטית.';
+      panel.appendChild(note);
+    });
+  }
+
+  function attachRowHover() {
+    document.addEventListener('mouseover', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const row = target?.closest('tr.zA');
+      if (!row || row === activeRow) return;
+      const record = recordForRow(row);
+      if (!record) return;
+      renderContextForRow(row, true);
+    });
+  }
+
 
   function extractTrackingId(img) {
     const candidates = ['src', 'data-src', 'data-original-src', 'srcset']
@@ -317,59 +456,16 @@
 
   function togglePanel() {
     const existing = document.getElementById(PANEL_ID);
-    if (existing) { existing.remove(); return; }
-    const panel = document.createElement('aside');
-    panel.id = PANEL_ID;
-    panel.innerHTML = '<div class="re-head"><div class="re-title">מעקב פתיחת מיילים</div><button class="re-close" type="button">סגירה</button></div><div class="re-muted">טוען את נתוני הפתיחה…</div>';
-    panel.querySelector('.re-close').addEventListener('click', () => panel.remove());
-    document.body.appendChild(panel);
-    getEvents(true).then((result) => {
-      if (!panel.isConnected) return;
-      panel.querySelector('.re-muted')?.remove();
-      if (!result.ok) {
-        const message = document.createElement('p');
-        message.className = 're-muted';
-        message.textContent = result.error;
-        panel.appendChild(message);
-        return;
-      }
-      const ids = new Map();
-      for (const event of result.events) {
-        if (!ids.has(event.id)) ids.set(event.id, []);
-        ids.get(event.id).push(event);
-      }
-      if (!ids.size) {
-        const empty = document.createElement('p');
-        empty.className = 're-muted';
-        empty.textContent = 'עדיין לא נרשמו פתיחות.';
-        panel.appendChild(empty);
-        return;
-      }
-      for (const [id, events] of ids) {
-        const item = document.createElement('section');
-        item.className = 're-item';
-        const title = document.createElement('div');
-        title.className = 're-item-title';
-        title.textContent = 'מזהה הודעה: ' + id;
-        item.appendChild(title);
-        const count = document.createElement('div');
-        count.className = 're-muted';
-        count.textContent = 'נרשמו ' + events.length + ' אירועי פתיחה';
-        item.appendChild(count);
-        events.slice().sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || '')).forEach((event) => {
-          const time = document.createElement('div');
-          time.className = 're-time';
-          const date = new Date(event.openedAt);
-          time.textContent = Number.isNaN(date.getTime()) ? 'זמן לא ידוע' : date.toLocaleString('he-IL');
-          item.appendChild(time);
-        });
-        panel.appendChild(item);
-      }
-      const note = document.createElement('p');
-      note.className = 're-muted';
-      note.textContent = 'הערה: סריקות אבטחה ושרתי תמונות עשויים להירשם כפתיחה. הנתונים מוצגים לפי מזהה מעקב.';
-      panel.appendChild(note);
-    });
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const panel = createPanel();
+    if (activeRow) renderContextForRow(activeRow, false);
+    else {
+      const message = panel.querySelector('.re-muted');
+      if (message) message.textContent = 'העבר את העכבר מעל שורה של מייל שנשלח כדי לראות את מספר הפתיחות ואת הזמנים שלו.';
+    }
   }
 
   async function refresh() {
@@ -389,6 +485,7 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   hookSendClicks();
+  attachRowHover();
   refresh();
   setInterval(refresh, 30000);
 })();
