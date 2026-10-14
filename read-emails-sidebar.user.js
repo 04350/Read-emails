@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.2.0
-// @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
+// @version      0.2.1
+// @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
@@ -34,6 +34,7 @@
   let activeRow = null;
   let activeRecord = null;
   let hoverUpdateCounter = 0;
+  const AUTO_SCAN_GRACE_MS = 60 * 1000; // Suppress likely immediate security-scanner fetches.
 
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
@@ -46,9 +47,9 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${BUTTON_ID}{position:fixed;left:12px;top:350px;width:42px;height:42px;border:0;border-radius:50%;margin:0;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002;z-index:999998}
+      #${BUTTON_ID}{position:fixed;left:6px;top:400px;width:42px;height:42px;border:0;border-radius:50%;margin:0;display:flex;align-items:center;justify-content:center;background:#e8f0fe;color:#174ea6;cursor:pointer;font:700 17px Arial;box-shadow:0 1px 4px #0002;z-index:999998}
       #${BUTTON_ID}:hover{background:#d2e3fc}
-      #${PANEL_ID}{position:fixed;top:350px;left:64px;right:auto;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
+      #${PANEL_ID}{position:fixed;top:400px;left:58px;right:auto;width:min(370px,calc(100vw - 100px));max-height:calc(100vh - 24px);overflow:auto;z-index:999999;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:14px;box-shadow:0 8px 32px #0003;padding:16px;direction:rtl;font:14px Arial,sans-serif}
       #${PANEL_ID} *{box-sizing:border-box}
       #${PANEL_ID} .re-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
       #${PANEL_ID} .re-title{font-size:17px;font-weight:700}
@@ -154,8 +155,25 @@
       .toLocaleLowerCase('he-IL');
   }
 
+  function countedEventsForRecord(record) {
+    const events = eventCache.filter((ev) => ev.id === record.id);
+    const sentAt = Date.parse(record.sentAt || record.createdAt || '');
+    if (!Number.isFinite(sentAt)) return events;
+
+    // Do not call immediate image fetches an "open". Keep older events that predate local discovery.
+    return events.filter((ev) => {
+      const openedAt = Date.parse(ev.openedAt || '');
+      if (!Number.isFinite(openedAt)) return true;
+      const age = openedAt - sentAt;
+      return age < 0 || age >= AUTO_SCAN_GRACE_MS;
+    });
+  }
+
   function setBadgeStatus(badge, id) {
-    const count = eventCache.filter((ev) => ev.id === id).length;
+    const record = getTrackedMessages().find((item) => item.id === id);
+    const count = record
+      ? countedEventsForRecord(record).length
+      : eventCache.filter((ev) => ev.id === id).length;
     const label = eventsState === 'ready'
       ? (count === 0 ? 'לא נפתח' : 'נפתח ' + count)
       : (eventsState === 'error' ? 'לא ניתן לבדוק' : 'בודק…');
@@ -242,11 +260,13 @@
     );
     const subject = String(subjectInput?.value || '').trim() || '(ללא נושא)';
     const recipients = readRecipients(compose);
+    const sentAt = new Date().toISOString();
     const record = {
       id,
       subject,
       recipients,
-      createdAt: new Date().toISOString()
+      createdAt: sentAt,
+      sentAt
     };
 
     try {
@@ -409,7 +429,7 @@
         return;
       }
 
-      const opens = eventCache.filter((event) => event.id === record.id)
+      const opens = countedEventsForRecord(record)
         .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
       const count = document.createElement('p');
       count.className = 're-muted';
@@ -431,7 +451,7 @@
       }
       const note = document.createElement('p');
       note.className = 're-muted';
-      note.textContent = 'ייתכן שחלק מהאירועים נוצרו מסריקות אבטחה או טעינת תמונות אוטומטית.';
+      note.textContent = 'בקשות שנרשמו בדקה הראשונה אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
       panel.appendChild(note);
     });
   }
@@ -532,11 +552,41 @@
     if (!isSentFolder()) return;
     const subjectNode = document.querySelector('h2.hP, h2[data-thread-perm-id]');
     if (!subjectNode) return;
-    // This only saves the subject-to-ID link locally when the sender opens their Sent copy.
+    // Save the subject-to-ID link locally only when the sender opens their Sent copy.
     document.querySelectorAll('img').forEach((img) => {
       const id = extractTrackingId(img);
       if (id) rememberVisibleTrackedMessage(id);
     });
+  }
+
+  function getOpenSentRecord() {
+    if (!isSentFolder()) return null;
+    const subjectNode = document.querySelector('h2.hP, h2[data-thread-perm-id]');
+    const subject = normalizeSubject(subjectNode?.textContent || subjectNode?.innerText || '');
+    if (!subject) return null;
+
+    const tracked = getTrackedMessages();
+    const visibleIds = new Set();
+    document.querySelectorAll('img').forEach((img) => {
+      const id = extractTrackingId(img);
+      if (id) visibleIds.add(id);
+    });
+    const directMatch = tracked.find((item) => visibleIds.has(item.id));
+    if (directMatch) return directMatch;
+
+    const subjectMatches = tracked.filter((item) => normalizeSubject(item.subject) === subject);
+    return subjectMatches.length === 1 ? subjectMatches[0] : null;
+  }
+
+  function updatePanelForOpenMessage() {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel || !isSentFolder()) return;
+    const record = getOpenSentRecord();
+    if (record && activeRecord?.id !== record.id) {
+      activeRow = null;
+      activeRecord = record;
+      renderContextRecord(panel, record);
+    }
   }
 
   function renderBadges() {
@@ -588,10 +638,14 @@
       return;
     }
     const panel = createPanel();
-    if (activeRow) renderContextForRow(activeRow, false);
-    else {
+    const record = getOpenSentRecord();
+    if (record) {
+      activeRecord = record;
+      activeRow = null;
+      renderContextRecord(panel, record);
+    } else {
       const message = panel.querySelector('.re-muted');
-      if (message) message.textContent = 'העבר את העכבר מעל שורה של מייל שנשלח כדי לראות את מספר הפתיחות ואת הזמנים שלו.';
+      if (message) message.textContent = 'פתח מייל מתוך תיקיית „נשלח” כדי לראות כאן את מספר הפתיחות ואת הזמנים שלו.';
     }
   }
 
@@ -602,6 +656,7 @@
     // Render even when the server request fails, so the badge can show 'לא ניתן לבדוק'.
     captureOpenSentThread();
     renderListBadges();
+    updatePanelForOpenMessage();
   }
 
   // Gmail redraws its interface dynamically, so re-check the page as it changes.
@@ -609,10 +664,10 @@
     buildSideButton();
     captureOpenSentThread();
     renderListBadges();
+    updatePanelForOpenMessage();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   hookSendClicks();
-  attachRowHover();
   refresh();
   setInterval(refresh, 30000);
 })();
