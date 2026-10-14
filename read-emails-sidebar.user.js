@@ -17,7 +17,7 @@
 
   // יש להגדיר כאן את כתובת ה-Worker ואת אותו DASHBOARD_TOKEN שהוגדר ב-Cloudflare.
   // אין לשמור בקובץ ציבורי את הטוקן האישי; הכנס אותו רק בעותק המקומי ב-Tampermonkey.
-  const WORKER_URL = 'PASTE_YOUR_CLOUDFLARE_WORKER_URL_HERE';
+  const WORKER_URL = 'https://royal-sun-b560.m67331222.workers.dev';
   const DASHBOARD_TOKEN = 'PASTE_YOUR_DASHBOARD_TOKEN_HERE';
   // Tracking pixels only require WORKER_URL. The sidebar's private event panel also requires DASHBOARD_TOKEN.
 
