@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.2.3
+// @version      0.2.4
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -443,7 +443,7 @@
     renderContextRecord(panel, record);
   }
 
-  function renderContextRecord(panel, record) {
+  function renderContextRecord(panel, record, forceFetch = false) {
     const requestId = ++hoverUpdateCounter;
     panel.replaceChildren();
 
@@ -471,7 +471,7 @@
       (eventsState === 'error' ? 'לא ניתן להתחבר כרגע לשרת כדי לבדוק פתיחות.' : 'טוען נתוני פתיחה…');
     panel.appendChild(status);
 
-    getEvents(false).then((result) => {
+    getEvents(forceFetch).then((result) => {
       if (!panel.isConnected || requestId !== hoverUpdateCounter) return;
       status.remove();
 
@@ -483,12 +483,23 @@
         return;
       }
 
+      const allEvents = eventCache.filter((event) => event.id === record.id);
       const opens = countedEventsForRecord(record)
         .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
       const count = document.createElement('p');
       count.className = 're-muted';
       count.textContent = opens.length === 0 ? 'לא נרשמה פתיחה' : 'נפתח ' + opens.length;
       panel.appendChild(count);
+
+      // Diagnostics distinguish "no pixel request reached the server" from "a hit was filtered".
+      const diagnostics = document.createElement('p');
+      diagnostics.className = 're-muted';
+      if (allEvents.length > 0 && opens.length === 0) {
+        diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום דקת ההמתנה. אם פתחת את המייל אחרי דקה, צריך לבדוק אם נשלחה בקשת תמונה חדשה.';
+      } else {
+        diagnostics.textContent = 'בקשות תמונת מעקב שנרשמו בשרת: ' + allEvents.length + ' · אירועים שנספרו כפתיחה: ' + opens.length;
+      }
+      panel.appendChild(diagnostics);
 
       if (opens.length) {
         const label = document.createElement('div');
@@ -632,14 +643,14 @@
     return subjectMatches.length === 1 ? subjectMatches[0] : null;
   }
 
-  function updatePanelForOpenMessage() {
+  function updatePanelForOpenMessage(refreshSameRecord = false) {
     const panel = document.getElementById(PANEL_ID);
     if (!panel || !isSentFolder()) return;
     const record = getOpenSentRecord();
-    if (record && activeRecord?.id !== record.id) {
+    if (record && (activeRecord?.id !== record.id || refreshSameRecord)) {
       activeRow = null;
       activeRecord = record;
-      renderContextRecord(panel, record);
+      renderContextRecord(panel, record, false);
     }
   }
 
@@ -696,7 +707,7 @@
     if (record) {
       activeRecord = record;
       activeRow = null;
-      renderContextRecord(panel, record);
+      renderContextRecord(panel, record, true);
     } else {
       const message = panel.querySelector('.re-muted');
       if (message) message.textContent = 'פתח מייל מתוך תיקיית „נשלח” כדי לראות כאן את מספר הפתיחות ואת הזמנים שלו.';
@@ -710,7 +721,7 @@
     // Render even when the server request fails, so the badge can show 'לא ניתן לבדוק'.
     captureOpenSentThread();
     renderListBadges();
-    updatePanelForOpenMessage();
+    updatePanelForOpenMessage(true);
   }
 
   // Gmail redraws its interface dynamically, so re-check the page as it changes.
