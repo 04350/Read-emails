@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — מעקב פתיחת מיילים ב-Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.1
+// @version      0.1.2
 // @description  מוסיף פיקסל מעקב למיילים יוצאים ב-Gmail ומציג אירועי פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_getValue
@@ -35,14 +35,26 @@
     el._timer = setTimeout(() => el.remove(), 5000);
   }
 
+  function getComposeFromButton(button) {
+    return button.closest('[role="dialog"]') || button.closest('form') || document;
+  }
+
   function getBodyFromButton(button) {
-    const compose = button.closest('[role="dialog"]') || button.closest('form') || document;
-    return compose.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[contenteditable="true"][g_editable="true"]');
+    const compose = getComposeFromButton(button);
+    // Gmail's aria-label changes with the interface language, so don't depend on the
+    // English "Message Body" label. In a compose dialog the message editor is contenteditable.
+    return compose.querySelector(
+      'div[contenteditable="true"][g_editable="true"],' +
+      'div[aria-label*="Message Body"][contenteditable="true"],' +
+      'div[aria-label*="גוף ההודעה"][contenteditable="true"],' +
+      'div[contenteditable="true"]'
+    );
   }
 
   function addPixel(body) {
     if (!installed()) { toast('צריך להגדיר תחילה את כתובת Cloudflare Worker בקוד Tampermonkey.'); return; }
-    if (!body || body.dataset.readEmailsTracked === '1') return;
+    if (!body) { toast('לא מצאתי את אזור כתיבת ההודעה. לא נוסף פיקסל מעקב.'); return; }
+    if (body.dataset.readEmailsTracked === '1') { toast('כבר נוסף פיקסל מעקב למייל הזה.'); return; }
     const id = crypto.randomUUID();
     const img = document.createElement('img');
     img.src = WORKER_URL.replace(/\/$/, '') + '/pixel?id=' + encodeURIComponent(id);
@@ -62,17 +74,34 @@
     toast('פיקסל מעקב נוסף למייל. שלח כרגיל.');
   }
 
-  // Hook the Gmail send-button click; use capture phase to add the image before Gmail serializes the message.
+  // Add the pixel during capture phase, before Gmail serializes the compose body for sending.
+  // Support Hebrew and English labels, and clicks on icons nested inside the send button.
   document.addEventListener('click', (event) => {
-    const button = event.target.closest('div[role="button"],button');
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const button = target?.closest('div[role="button"],button,[role="button"]');
     if (!button) return;
-    const label = ((button.getAttribute('aria-label') || '') + ' ' + (button.innerText || '')).trim().toLowerCase();
-    if (!/(^|\b)send\b|שליחה|שלח/.test(label)) return;
-    const body = getBodyFromButton(button);
-    if (body && body.dataset.readEmailsTracked !== '1') {
-      // Avoid interrupting sending; insert synchronously on the same click.
-      addPixel(body);
+
+    const label = [
+      button.getAttribute('aria-label') || '',
+      button.getAttribute('data-tooltip') || '',
+      button.getAttribute('title') || '',
+      button.innerText || ''
+    ].join(' ').trim().toLowerCase();
+
+    if (!/(\\bsend\\b|שלח|שליחה)/i.test(label)) return;
+    if (!installed()) {
+      toast('צריך להגדיר את WORKER_URL בקוד Tampermonkey לפני השליחה.');
+      return;
     }
+
+    const body = getBodyFromButton(button);
+    if (!body) {
+      toast('זיהיתי לחיצה על שליחה, אבל לא מצאתי את גוף ההודעה. לא נוסף פיקסל מעקב.');
+      return;
+    }
+
+    // Run synchronously on the same click so the image is present before Gmail sends.
+    addPixel(body);
   }, true);
 
   GM_registerMenuCommand('Read-emails: הצג פתיחות שנרשמו', async () => {
