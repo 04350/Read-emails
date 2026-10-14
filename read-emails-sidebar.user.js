@@ -604,7 +604,7 @@
     button.setAttribute('aria-label', 'זמני פתיחת מיילים');
     button.textContent = '✓';
     button.addEventListener('click', togglePanel);
-    Object.assign(button.style, { position: 'fixed', left: '12px', top: '350px', zIndex: '999998' });
+    Object.assign(button.style, { position: 'fixed', left: '6px', top: '400px', zIndex: '999998' });
     document.body.appendChild(button);
   }
 
