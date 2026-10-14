@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.2.2
+// @version      0.2.3
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -160,12 +160,16 @@
     const sentAt = Date.parse(record.sentAt || record.createdAt || '');
     if (!Number.isFinite(sentAt)) return events;
 
-    // Do not call immediate image fetches an "open". Keep older events that predate local discovery.
+    // Only records created at send-time have sentAt. For these, ignore all events
+    // earlier than the local send click as well as events in the following 60 seconds.
+    // A pixel request can arrive just before the metadata is saved; that negative age
+    // is a strong sign of an immediate proxy/scanner fetch, not proof of a human opening.
+    if (!record.sentAt) return events; // Legacy records have no trustworthy send-time.
     return events.filter((ev) => {
       const openedAt = Date.parse(ev.openedAt || '');
-      if (!Number.isFinite(openedAt)) return true;
+      if (!Number.isFinite(openedAt)) return false;
       const age = openedAt - sentAt;
-      return age < 0 || age >= AUTO_SCAN_GRACE_MS;
+      return age >= AUTO_SCAN_GRACE_MS;
     });
   }
 
@@ -334,12 +338,21 @@
       if (target) handleSendAttempt(target);
     }, true);
 
-    // Also support Gmail's Ctrl+Enter shortcut, using the active compose editor as the context.
+    // Also support Gmail's Ctrl+Enter shortcut. The key event target is the editor,
+    // not the send button, so add the pixel directly to that compose draft.
     document.addEventListener('keydown', (event) => {
-      if (!event.ctrlKey || event.key !== 'Enter') return;
+      if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') return;
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (!target?.closest?.('[role="dialog"]')) return;
-      handleSendAttempt(target);
+      const editor = target?.closest?.('[contenteditable="true"]');
+      if (!editor) return;
+
+      const compose = editor.closest('[role="dialog"]') || editor.closest('form');
+      if (!compose) {
+        notify('קלטתי Ctrl+Enter, אבל לא מצאתי את חלון כתיבת המייל. לא נוסף פיקסל.');
+        return;
+      }
+      // Use the editor as context; getComposeFromButton will resolve the surrounding compose dialog.
+      addPixelAndSaveMessage(editor);
     }, true);
   }
 
