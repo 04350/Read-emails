@@ -369,9 +369,35 @@
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       const row = target?.closest('tr.zA');
       if (!row || row === activeRow) return;
+      activeRow = row;
       const record = recordForRow(row);
-      if (!record) return;
-      renderContextForRow(row, true);
+
+      if (record) {
+        renderContextForRow(row, true);
+        return;
+      }
+
+      activeRecord = null;
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        panel.replaceChildren();
+        const head = document.createElement('div');
+        head.className = 're-head';
+        const title = document.createElement('div');
+        title.className = 're-title';
+        title.textContent = 'פרטי פתיחה';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 're-close';
+        close.textContent = 'סגירה';
+        close.addEventListener('click', () => panel.remove());
+        head.append(title, close);
+        panel.appendChild(head);
+        const message = document.createElement('p');
+        message.className = 're-muted';
+        message.textContent = 'לא נמצא מעקב עבור המייל הזה, או שנושא המייל אינו חד־משמעי.';
+        panel.appendChild(message);
+      }
     });
   }
 
