@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.2.1
+// @version      0.2.2
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -283,22 +283,63 @@
     renderListBadges();
   }
 
-  function hookSendClicks() {
-    // Capture phase is important: add the pixel before Gmail serializes and sends the message.
-    document.addEventListener('click', (event) => {
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      const button = target?.closest('div[role="button"],button,[role="button"]');
-      if (!button) return;
+  function findSendControl(target) {
+    let node = target;
+    for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+      if (node.matches?.('[role="dialog"],form')) break;
+
+      const isInteractive = node.matches?.('button,[role="button"],[data-tooltip],[aria-label],[title],.T-I-atl');
+      if (!isInteractive) continue;
 
       const label = [
-        button.getAttribute('aria-label') || '',
-        button.getAttribute('data-tooltip') || '',
-        button.getAttribute('title') || '',
-        button.innerText || ''
-      ].join(' ').trim().toLowerCase();
+        node.getAttribute('aria-label') || '',
+        node.getAttribute('data-tooltip') || '',
+        node.getAttribute('title') || '',
+        node.getAttribute('data-testid') || '',
+        node.innerText || '',
+        node.textContent || '',
+        typeof node.className === 'string' ? node.className : ''
+      ].join(' ').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().toLowerCase();
 
-      if (!/(send|שלח|שליחה)/i.test(label)) return;
-      addPixelAndSaveMessage(button);
+      if (/(send|שלח|שליחה|שליחת הודעה)/i.test(label)) return node;
+      // Gmail's main send button commonly retains this class even if it has no readable label.
+      if (node.classList?.contains('T-I-atl')) return node;
+    }
+    return null;
+  }
+
+  function handleSendAttempt(target) {
+    const sendControl = findSendControl(target);
+    if (!sendControl) return false;
+
+    const compose = getComposeFromButton(sendControl);
+    const body = getBodyFromButton(sendControl);
+    if (!body) {
+      notify('זיהיתי את כפתור השליחה, אבל לא מצאתי את גוף ההודעה. לא נוסף פיקסל מעקב.');
+      return true;
+    }
+    if (body.dataset.readEmailsTracked === '1') {
+      notify('כבר קיים פיקסל מעקב בטיוטה הזו. אם זו טיוטה שנוצרה לפני העדכון, פתח הודעה חדשה לבדיקה.');
+      return true;
+    }
+
+    addPixelAndSaveMessage(sendControl);
+    return true;
+  }
+
+  function hookSendClicks() {
+    // Try to add the tracking pixel before Gmail processes the send click.
+    document.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (target) handleSendAttempt(target);
+    }, true);
+
+    // Also support Gmail's Ctrl+Enter shortcut, using the active compose editor as the context.
+    document.addEventListener('keydown', (event) => {
+      if (!event.ctrlKey || event.key !== 'Enter') return;
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (!target?.closest?.('[role="dialog"]')) return;
+      handleSendAttempt(target);
     }, true);
   }
 
@@ -670,4 +711,9 @@
   hookSendClicks();
   refresh();
   setInterval(refresh, 30000);
+  notify(
+    WORKER_URL.startsWith('https://') && !WORKER_URL.includes('PASTE_')
+      ? 'סקריפט Read-emails המאוחד נטען. אפשר לשלוח מייל בדיקה.'
+      : 'סקריפט Read-emails נטען, אבל צריך להגדיר WORKER_URL בקוד.'
+  );
 })();
