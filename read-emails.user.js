@@ -88,7 +88,7 @@
       button.innerText || ''
     ].join(' ').trim().toLowerCase();
 
-    if (!/(\\bsend\\b|שלח|שליחה)/i.test(label)) return;
+    if (!/(send|שלח|שליחה)/i.test(label)) return;
     if (!installed()) {
       toast('צריך להגדיר את WORKER_URL בקוד Tampermonkey לפני השליחה.');
       return;
