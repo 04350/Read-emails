@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.1.5
+// @version      0.2.0
 // @description  מציג ליד הודעות שנשלחו אם נפתחו וכמה פעמים, ומוסיף כפתור צד בעברית להצגת זמני פתיחה
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @connect      *
@@ -18,6 +19,7 @@
   // אין לשמור בקובץ ציבורי את הטוקן האישי; הכנס אותו רק בעותק המקומי ב-Tampermonkey.
   const WORKER_URL = 'PASTE_YOUR_CLOUDFLARE_WORKER_URL_HERE';
   const DASHBOARD_TOKEN = 'PASTE_YOUR_DASHBOARD_TOKEN_HERE';
+  // Tracking pixels only require WORKER_URL. The sidebar's private event panel also requires DASHBOARD_TOKEN.
 
   const STYLE_ID = 'read-emails-sidebar-styles';
   const BUTTON_ID = 'read-emails-sidebar-button';
@@ -166,58 +168,117 @@
     if (badge.title !== title) badge.title = title;
   }
 
-  function captureSentMessageMetadata(compose, body, subject, recipients, attempt = 0) {
-    if (!compose) return;
-    const bodyNow = body || compose.querySelector(
-      'div[aria-label="Message Body"][contenteditable="true"],div[contenteditable="true"][g_editable="true"],div[contenteditable="true"]'
-    );
-    const subjectNow = String(subject || compose.querySelector('input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]')?.value || '').trim();
+  function getComposeFromButton(button) {
+    return button.closest('[role="dialog"]') || button.closest('form') || document;
+  }
 
-    let id = null;
-    if (bodyNow) {
-      for (const img of bodyNow.querySelectorAll('img')) {
-        id = extractTrackingId(img);
-        if (id) break;
-      }
-    }
-    if ((!id || !subjectNow) && attempt < 12) {
-      setTimeout(() => captureSentMessageMetadata(compose, bodyNow, subjectNow, recipients, attempt + 1), 100);
+  function getBodyFromButton(button) {
+    const compose = getComposeFromButton(button);
+    // Gmail changes the editor's aria-label by language, so use contenteditable as a fallback.
+    return compose.querySelector(
+      'div[contenteditable="true"][g_editable="true"],' +
+      'div[aria-label*="Message Body"][contenteditable="true"],' +
+      'div[aria-label*="גוף ההודעה"][contenteditable="true"],' +
+      'div[contenteditable="true"]'
+    );
+  }
+
+  function readRecipients(compose) {
+    const values = [...compose.querySelectorAll(
+      '[name="to"] [email],[name="to"] [data-hovercard-id],[name="to"] input,[name="to"]'
+    )].map((el) =>
+      el.getAttribute('email') ||
+      el.getAttribute('data-hovercard-id') ||
+      el.getAttribute('data-email') ||
+      el.value ||
+      ''
+    );
+    return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+  }
+
+  function makeTrackingId() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+      const random = crypto.getRandomValues(new Uint8Array(1))[0] & 15;
+      return (char === 'x' ? random : (random & 3) | 8).toString(16);
+    });
+  }
+
+  function addPixelAndSaveMessage(button) {
+    const workerReady = WORKER_URL.startsWith('https://') && !WORKER_URL.includes('PASTE_');
+    if (!workerReady) {
+      notify('צריך להגדיר את WORKER_URL בקוד של הסקריפט החדש לפני השליחה.');
       return;
     }
-    if (!id || !subjectNow) return;
 
-    const items = getTrackedMessages();
+    const compose = getComposeFromButton(button);
+    const body = getBodyFromButton(button);
+    if (!body) {
+      notify('זיהיתי לחיצה על שליחה, אבל לא מצאתי את גוף ההודעה. לא נוסף פיקסל מעקב.');
+      return;
+    }
+    if (body.dataset.readEmailsTracked === '1') return;
+
+    const id = makeTrackingId();
+    const img = document.createElement('img');
+    img.src = WORKER_URL.replace(/\/+$/, '') + '/pixel?id=' + encodeURIComponent(id);
+    img.width = 1;
+    img.height = 1;
+    img.alt = '';
+    img.setAttribute('aria-hidden', 'true');
+    img.setAttribute('data-read-emails-pixel', id);
+    img.style.cssText = 'width:1px!important;height:1px!important;max-width:1px!important;max-height:1px!important;opacity:0!important;border:0!important;';
+
+    const marker = document.createElement('span');
+    marker.setAttribute('data-read-emails-marker', id);
+    marker.setAttribute('aria-hidden', 'true');
+    marker.textContent = '\u200b';
+    marker.appendChild(img);
+    body.appendChild(marker);
+    body.dataset.readEmailsTracked = '1';
+
+    const subjectInput = compose.querySelector(
+      'input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]'
+    );
+    const subject = String(subjectInput?.value || '').trim() || '(ללא נושא)';
+    const recipients = readRecipients(compose);
     const record = {
       id,
-      subject: subjectNow,
-      recipients: Array.isArray(recipients) ? recipients : [],
+      subject,
+      recipients,
       createdAt: new Date().toISOString()
     };
-    const next = items.filter((item) => item.id !== id);
-    next.push(record);
-    try { GM_setValue('readEmailsSidebarTrackedMessages', next.slice(-1000)); } catch {}
+
+    try {
+      const records = getTrackedMessages().filter((item) => item.id !== id);
+      records.push(record);
+      GM_setValue('readEmailsSidebarTrackedMessages', records.slice(-1000));
+      // Keep compatibility with the old script's local key, without requiring the old script to run.
+      const legacy = GM_getValue('trackedMessages', []);
+      legacy.push({ id, createdAt: record.createdAt });
+      GM_setValue('trackedMessages', legacy.slice(-1000));
+    } catch {}
+
+    notify('פיקסל מעקב נוסף למייל. שלח כרגיל.');
     renderListBadges();
-    if (activeRow) renderContextForRow(activeRow, false);
   }
 
   function hookSendClicks() {
+    // Capture phase is important: add the pixel before Gmail serializes and sends the message.
     document.addEventListener('click', (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      const button = target?.closest('div[role="button"],button');
+      const button = target?.closest('div[role="button"],button,[role="button"]');
       if (!button) return;
-      const label = ((button.getAttribute('aria-label') || '') + ' ' + (button.innerText || '')).trim().toLowerCase();
-      if (!/(send|שליחה|שלח)/i.test(label)) return;
-      const compose = button.closest('[role="dialog"]') || button.closest('form');
-      if (!compose) return;
-      const body = compose.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[contenteditable="true"][g_editable="true"], div[contenteditable="true"]');
-      const subjectInput = compose.querySelector('input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]');
-      const subject = subjectInput?.value || '';
-      const recipients = [...compose.querySelectorAll('[name="to"] [email],[name="to"] [data-hovercard-id],[name="to"] input')]
-        .map((el) => el.getAttribute('email') || el.getAttribute('data-hovercard-id') || el.value || el.textContent || '')
-        .map((value) => String(value).trim())
-        .filter(Boolean);
-      // Retry after Gmail and the original tracking script have updated the message body.
-      setTimeout(() => captureSentMessageMetadata(compose, body, subject, recipients), 0);
+
+      const label = [
+        button.getAttribute('aria-label') || '',
+        button.getAttribute('data-tooltip') || '',
+        button.getAttribute('title') || '',
+        button.innerText || ''
+      ].join(' ').trim().toLowerCase();
+
+      if (!/(send|שלח|שליחה)/i.test(label)) return;
+      addPixelAndSaveMessage(button);
     }, true);
   }
 
@@ -336,7 +397,7 @@
       (eventsState === 'error' ? 'לא ניתן להתחבר כרגע לשרת כדי לבדוק פתיחות.' : 'טוען נתוני פתיחה…');
     panel.appendChild(status);
 
-    getEvents(true).then((result) => {
+    getEvents(false).then((result) => {
       if (!panel.isConnected || requestId !== hoverUpdateCounter) return;
       status.remove();
 
