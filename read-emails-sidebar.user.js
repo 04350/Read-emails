@@ -18,7 +18,7 @@
   // יש להגדיר כאן את כתובת ה-Worker ואת אותו DASHBOARD_TOKEN שהוגדר ב-Cloudflare.
   // אין לשמור בקובץ ציבורי את הטוקן האישי; הכנס אותו רק בעותק המקומי ב-Tampermonkey.
   const WORKER_URL = 'https://royal-sun-b560.m67331222.workers.dev';
-  const DASHBOARD_TOKEN = 'QWERTYUIOPASDFGHJKLZXCVBNM123456';
+  const DASHBOARD_TOKEN = 'PASTE_YOUR_DASHBOARD_TOKEN_HERE';
   // Tracking pixels only require WORKER_URL. The sidebar's private event panel also requires DASHBOARD_TOKEN.
 
   const STYLE_ID = 'read-emails-sidebar-styles';
@@ -34,7 +34,7 @@
   let activeRow = null;
   let activeRecord = null;
   let hoverUpdateCounter = 0;
-  const AUTO_SCAN_GRACE_MS = 60 * 1000; // Suppress likely immediate security-scanner fetches.
+  const AUTO_SCAN_GRACE_MS = 30 * 1000; // Suppress likely immediate security-scanner fetches.
 
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
@@ -161,7 +161,7 @@
     if (!Number.isFinite(sentAt)) return events;
 
     // Only records created at send-time have sentAt. For these, ignore all events
-    // earlier than the local send click as well as events in the following 60 seconds.
+    // earlier than the local send click as well as events in the following 30 seconds.
     // A pixel request can arrive just before the metadata is saved; that negative age
     // is a strong sign of an immediate proxy/scanner fetch, not proof of a human opening.
     if (!record.sentAt) return events; // Legacy records have no trustworthy send-time.
@@ -495,7 +495,7 @@
       const diagnostics = document.createElement('p');
       diagnostics.className = 're-muted';
       if (allEvents.length > 0 && opens.length === 0) {
-        diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום דקת ההמתנה. אם פתחת את המייל אחרי דקה, צריך לבדוק אם נשלחה בקשת תמונה חדשה.';
+        diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום 30 שניות ההמתנה. אם פתחת את המייל אחרי דקה, צריך לבדוק אם נשלחה בקשת תמונה חדשה.';
       } else {
         diagnostics.textContent = 'בקשות תמונת מעקב שנרשמו בשרת: ' + allEvents.length + ' · אירועים שנספרו כפתיחה: ' + opens.length;
       }
@@ -516,7 +516,7 @@
       }
       const note = document.createElement('p');
       note.className = 're-muted';
-      note.textContent = 'בקשות שנרשמו בדקה הראשונה אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
+      note.textContent = 'בקשות שנרשמו ב־30 השניות הראשונות אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
       panel.appendChild(note);
     });
   }
