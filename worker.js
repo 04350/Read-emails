@@ -8,6 +8,12 @@
  *   GET /events (Authorization: Bearer <secret>) lists recorded events
  *   GET /health                           basic configuration check
  */
+// Cache the assembled event list in the warm Worker isolate to avoid a KV list on every sidebar poll.
+// Data may be up to 5 minutes behind; this dramatically reduces daily KV list operations.
+const EVENTS_CACHE_TTL_MS = 5 * 60 * 1000;
+let eventsCache = { expiresAt: 0, value: null };
+let eventsLoadPromise = null;
+
 const PIXEL = Uint8Array.from([
   71,73,70,56,57,97,1,0,1,0,128,0,0,0,0,0,255,255,255,33,249,4,1,0,0,0,0,
   44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,59
@@ -43,18 +49,32 @@ export default {
       const token = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
       if (!env.DASHBOARD_TOKEN || token !== env.DASHBOARD_TOKEN) return response("Unauthorized", 401);
       if (!env.TRACKING_KV) return response(JSON.stringify({ error: "Missing TRACKING_KV binding" }), 500, { "Content-Type": "application/json; charset=utf-8" });
-      const events = [];
-      let cursor;
-      do {
-        const page = await env.TRACKING_KV.list({ prefix: "open:", limit: 1000, cursor });
-        for (const item of page.keys) {
-          const raw = await env.TRACKING_KV.get(item.name);
-          if (raw) { try { events.push(JSON.parse(raw)); } catch {} }
+      let payload = eventsCache.value;
+      if (!payload || Date.now() >= eventsCache.expiresAt) {
+        if (!eventsLoadPromise) {
+          eventsLoadPromise = (async () => {
+            const events = [];
+            let cursor;
+            do {
+              const page = await env.TRACKING_KV.list({ prefix: "open:", limit: 1000, cursor });
+              for (const item of page.keys) {
+                const raw = await env.TRACKING_KV.get(item.name);
+                if (raw) { try { events.push(JSON.parse(raw)); } catch {} }
+              }
+              cursor = page.list_complete ? undefined : page.cursor;
+            } while (cursor && events.length < 5000);
+            events.sort((a, b) => (b.openedAt || "").localeCompare(a.openedAt || ""));
+            return { events, note: "Open events may include image-proxy or security-scanner requests." };
+          })();
         }
-        cursor = page.list_complete ? undefined : page.cursor;
-      } while (cursor && events.length < 5000);
-      events.sort((a, b) => (b.openedAt || "").localeCompare(a.openedAt || ""));
-      return response(JSON.stringify({ events, note: "Open events may include image-proxy or security-scanner requests." }), 200, { "Content-Type": "application/json; charset=utf-8" });
+        try {
+          payload = await eventsLoadPromise;
+          eventsCache = { value: payload, expiresAt: Date.now() + EVENTS_CACHE_TTL_MS };
+        } finally {
+          eventsLoadPromise = null;
+        }
+      }
+      return response(JSON.stringify(payload), 200, { "Content-Type": "application/json; charset=utf-8" });
     }
     return response("Read-emails worker is running. Use /health, /pixel, or /events.", 200, { "Content-Type": "text/plain; charset=utf-8" });
   }
