@@ -575,7 +575,7 @@
         node.textContent || ''
       ].join(' ').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().toLowerCase();
 
-      const normalizedLabel = label.replace(/[()\\s]+/g, ' ').trim();
+      const normalizedLabel = label.replace(/[() ]+/g, ' ').replace(/\s+/g, ' ').trim();
       if ([
         'send', 'send mail', 'שלח', 'שליחה', 'שליחת הודעה'
       ].some((phrase) => normalizedLabel === phrase || normalizedLabel.startsWith(phrase + ' '))) {
