@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.0
+// @version      0.3.1
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -257,11 +257,59 @@
   }
 
   function findComposeButton() {
-    return document.querySelector('[gh="cm"]') ||
-      document.querySelector(
-        '[role="button"][aria-label*="Compose"],[role="button"][aria-label*="כתיבה"],' +
-        '[aria-label*="Compose"],[aria-label*="כתיבה"],[data-tooltip*="Compose"],[data-tooltip*="כתיבה"]'
-      );
+    const isVisible = (el) => {
+      if (!el || !el.isConnected) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 &&
+        style.display !== 'none' && style.visibility !== 'hidden' &&
+        style.opacity !== '0';
+    };
+
+    const labelOf = (el) => [
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('data-tooltip') || '',
+      el.getAttribute('title') || '',
+      el.getAttribute('data-testid') || '',
+      el.innerText || '',
+      el.textContent || ''
+    ].join(' ').replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, ' ')
+      .replace(/\\s+/g, ' ').trim().toLowerCase();
+
+    const excluded = (el) => {
+      if (el.closest('#' + PANEL_ID) || el.closest('[role="dialog"]')) return true;
+      return getComposeRoots().some((root) => root.contains(el));
+    };
+
+    // Prefer Gmail's historical compose hook when it is present and visible.
+    const legacy = [...document.querySelectorAll('[gh="cm"]')].find((el) => isVisible(el) && !excluded(el));
+    if (legacy) return legacy;
+
+    // Gmail changes the compose button's attributes between layouts and languages.
+    // Search visible clickable controls by both accessible labels and displayed text.
+    const candidates = [...document.querySelectorAll(
+      'button,[role="button"],a,[data-tooltip],[aria-label]'
+    )].filter((el) => isVisible(el) && !excluded(el));
+
+    const scored = candidates.map((el) => {
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      const tooltip = (el.getAttribute('data-tooltip') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+      const text = String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const all = [aria, tooltip, title, text].join(' ');
+      if (!/(compose|new message|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה)/i.test(all)) return null;
+
+      let score = 0;
+      if (/^(compose|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה)$/.test(aria.trim())) score += 100;
+      if (/^(compose|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה)$/.test(tooltip.trim())) score += 90;
+      if (/^(compose|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה)$/.test(text)) score += 80;
+      if (/compose|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה/i.test(aria + ' ' + tooltip + ' ' + title)) score += 30;
+      if (/compose|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה/i.test(text)) score += 10;
+      if (el.matches('button,[role="button"],a')) score += 5;
+      return { el, score };
+    }).filter(Boolean).sort((a, b) => b.score - a.score);
+
+    return scored[0]?.el || null;
   }
 
   function findComposeSendButton(compose) {
