@@ -556,7 +556,7 @@
 
     const recipients = readRecipients(compose);
     if (recipients.length > 1) {
-      const malformedRecipient = recipients.some((email) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email));
+      const malformedRecipient = recipients.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
       const blocker = malformedRecipient
         ? 'לא הצלחתי לזהות בוודאות את כל כתובות הנמענים. לא פיצלתי את המייל; השליחה תמשיך כרגיל עם מעקב משותף.'
         : splitBlocker(compose, body);
