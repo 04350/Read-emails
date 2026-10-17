@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.2
+// @version      0.3.3
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -550,12 +550,21 @@
   }
 
   function findSendControl(target) {
-    let node = target;
-    for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
-      if (node.matches?.('[role="dialog"],form')) break;
+    // Only treat clicks inside an actual compose window as possible send actions.
+    // Gmail can render recipient suggestions outside the compose dialog; those clicks
+    // must never be interpreted as pressing Send.
+    const element = target instanceof Element ? target : target?.parentElement;
+    if (!element) return null;
+    const compose = element.closest('[role="dialog"],form');
+    if (!compose || !getBodyFromButton(compose)) return null;
 
-      const isInteractive = node.matches?.('button,[role="button"],[data-tooltip],[aria-label],[title],.T-I-atl');
-      if (!isInteractive) continue;
+    let node = element;
+    for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+      if (node === compose) break;
+
+      // Avoid a class-only match: Gmail reuses visual classes and recipient interactions
+      // must not trigger sending or per-recipient splitting.
+      if (!node.matches?.('button,[role="button"],a')) continue;
 
       const label = [
         node.getAttribute('aria-label') || '',
@@ -563,13 +572,10 @@
         node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '',
         node.innerText || '',
-        node.textContent || '',
-        typeof node.className === 'string' ? node.className : ''
+        node.textContent || ''
       ].join(' ').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().toLowerCase();
 
-      if (/(send|שלח|שליחה|שליחת הודעה)/i.test(label)) return node;
-      // Gmail's main send button commonly retains this class even if it has no readable label.
-      if (node.classList?.contains('T-I-atl')) return node;
+      if (/(^|\\b)(send|send mail|שלח|שליחה|שליחת הודעה)(\\b|$)/i.test(label)) return node;
     }
     return null;
   }
