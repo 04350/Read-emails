@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.1
+// @version      0.3.2
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -273,8 +273,8 @@
       el.getAttribute('data-testid') || '',
       el.innerText || '',
       el.textContent || ''
-    ].join(' ').replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, ' ')
-      .replace(/\\s+/g, ' ').trim().toLowerCase();
+    ].join(' ').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
 
     const excluded = (el) => {
       if (el.closest('#' + PANEL_ID) || el.closest('[role="dialog"]')) return true;
@@ -295,7 +295,7 @@
       const aria = (el.getAttribute('aria-label') || '').toLowerCase();
       const tooltip = (el.getAttribute('data-tooltip') || '').toLowerCase();
       const title = (el.getAttribute('title') || '').toLowerCase();
-      const text = String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const text = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const all = [aria, tooltip, title, text].join(' ');
       if (!/(compose|new message|כתיבה|כתיבת הודעה|כתיבת מייל|מייל חדש|הודעה חדשה)/i.test(all)) return null;
 
