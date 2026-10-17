@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.2.4
+// @version      0.3.0
+// @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
+// @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
 // @match        https://mail.google.com/mail/*
 // @grant        GM_xmlhttpRequest
@@ -34,6 +36,9 @@
   let activeRow = null;
   let activeRecord = null;
   let hoverUpdateCounter = 0;
+  let splitSendBusy = false;
+  let splitOperationActive = false;
+  let splitSourceCompose = null;
   const AUTO_SCAN_GRACE_MS = 30 * 1000; // Suppress likely immediate security-scanner fetches.
 
   const configured = () =>
@@ -226,6 +231,207 @@
     });
   }
 
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForValue(getValue, timeoutMs = 5000, intervalMs = 150) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      try { const value = getValue(); if (value) return value; } catch {}
+      await delay(intervalMs);
+    }
+    return null;
+  }
+
+  function getComposeRoots() {
+    const hasEditor = (root) => root.querySelector(
+      'div[contenteditable="true"][g_editable="true"],' +
+      'div[aria-label*="Message Body"][contenteditable="true"],' +
+      'div[aria-label*="גוף ההודעה"][contenteditable="true"],' +
+      'div[contenteditable="true"]'
+    );
+    const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(hasEditor);
+    if (dialogs.length) return dialogs;
+    return [...document.querySelectorAll('form')].filter(hasEditor);
+  }
+
+  function findComposeButton() {
+    return document.querySelector('[gh="cm"]') ||
+      document.querySelector(
+        '[role="button"][aria-label*="Compose"],[role="button"][aria-label*="כתיבה"],' +
+        '[aria-label*="Compose"],[aria-label*="כתיבה"],[data-tooltip*="Compose"],[data-tooltip*="כתיבה"]'
+      );
+  }
+
+  function findComposeSendButton(compose) {
+    for (const selector of [
+      '.T-I-atl',
+      '[role="button"][data-tooltip*="Send"]',
+      '[role="button"][data-tooltip*="שליחה"]',
+      '[role="button"][aria-label*="Send"]',
+      '[role="button"][aria-label*="שלח"]',
+      'button[type="submit"]'
+    ]) {
+      const button = compose.querySelector(selector);
+      if (button && button.isConnected) return button;
+    }
+    return null;
+  }
+
+  function setInputValue(input, value) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function readRecipientChipEmails(compose) {
+    return [...compose.querySelectorAll('[name="to"] [email],[name="to"] [data-hovercard-id]')]
+      .map((el) => el.getAttribute('email') || el.getAttribute('data-hovercard-id') || '')
+      .map((value) => String(value).trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  async function addSingleRecipient(compose, email) {
+    let input = compose.querySelector('[name="to"] input') || compose.querySelector('input[name="to"]');
+    if (!input) {
+      const region = compose.querySelector('[name="to"]');
+      if (region && region.matches('input')) input = region;
+    }
+    if (!input) return false;
+    input.focus();
+    setInputValue(input, email);
+    await delay(250);
+    for (let i = 0; i < 2; i++) {
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      }
+      await delay(250);
+      if (readRecipientChipEmails(compose).includes(email.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  function setSubject(compose, value) {
+    const input = compose.querySelector(
+      'input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]'
+    );
+    if (!input) return false;
+    setInputValue(input, value);
+    return String(input.value || '') === value;
+  }
+
+  function setBodyHtml(compose, html) {
+    const body = getBodyFromButton(compose);
+    if (!body) return false;
+    body.focus();
+    body.innerHTML = html;
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText' }));
+    body.dispatchEvent(new Event('change', { bubbles: true }));
+    return body.innerHTML === html;
+  }
+
+  function splitBlocker(compose, body) {
+    const ccBcc = [...compose.querySelectorAll(
+      '[name="cc"] [email],[name="cc"] [data-hovercard-id],[name="bcc"] [email],[name="bcc"] [data-hovercard-id]'
+    )];
+    const ccBccInputs = [...compose.querySelectorAll('input[name="cc"],input[name="bcc"]')]
+      .some((input) => String(input.value || '').trim());
+    if (ccBcc.length || ccBccInputs) {
+      return 'פיצול אוטומטי תומך כרגע רק בנמענים בשדה אל. יש נמענים בשדות עותק/עותק מוסתר, ולכן המייל לא פוצל.';
+    }
+    if (body.querySelector('img:not([data-read-emails-pixel])')) {
+      return 'פיצול אוטומטי לא הופעל כי גוף המייל כולל תמונות מוטמעות, למשל תמונה בחתימה. השליחה תמשיך כרגיל עם מעקב משותף.';
+    }
+    const attachmentLabels = [...compose.querySelectorAll('[aria-label],[data-tooltip],[title]')]
+      .map((el) => [
+        el.getAttribute('aria-label') || '',
+        el.getAttribute('data-tooltip') || '',
+        el.getAttribute('title') || ''
+      ].join(' ').toLowerCase());
+    if (attachmentLabels.some((label) => /remove attachment|attachment:|קובץ מצורף|הסר קובץ|הסרת קובץ|הסרת הקובץ/.test(label)) ||
+        compose.querySelector('.aZo,.aQH .aZo')) {
+      return 'פיצול אוטומטי לא תומך כרגע בקבצים מצורפים. המייל יישלח כרגיל עם מעקב משותף.';
+    }
+    return '';
+  }
+
+  async function createSplitComposer(subject, bodyHtml, email) {
+    const composeButton = findComposeButton();
+    if (!composeButton) throw new Error('לא נמצא כפתור כתיבת מייל חדש.');
+    const before = new Set(getComposeRoots());
+    composeButton.click();
+    const newCompose = await waitForValue(() => getComposeRoots().find((root) => !before.has(root)), 6000);
+    if (!newCompose) throw new Error('Gmail לא פתח חלון כתיבה נוסף בזמן.');
+    if (!await addSingleRecipient(newCompose, email)) throw new Error('לא הצלחתי להכניס את הנמען ' + email + ' לחלון החדש.');
+    if (!setSubject(newCompose, subject)) throw new Error('לא הצלחתי למלא את נושא המייל.');
+    if (!setBodyHtml(newCompose, bodyHtml)) throw new Error('לא הצלחתי להעתיק את גוף המייל.');
+    return newCompose;
+  }
+
+  function closeSourceDraft(compose) {
+    const controls = [...compose.querySelectorAll('button,[role="button"],[aria-label],[data-tooltip],[title]')];
+    const discard = controls.find((el) => {
+      const label = [el.getAttribute('aria-label') || '', el.getAttribute('data-tooltip') || '',
+        el.getAttribute('title') || '', el.textContent || ''].join(' ').toLowerCase();
+      return /discard draft|השלך טיוטה|השלכת טיוטה|מחיקת טיוטה/.test(label);
+    });
+    if (discard) { discard.click(); return true; }
+    const close = controls.find((el) => {
+      const label = [el.getAttribute('aria-label') || '', el.getAttribute('data-tooltip') || '',
+        el.getAttribute('title') || ''].join(' ').toLowerCase();
+      return /^(close|סגירה|סגור)$/.test(label.trim());
+    });
+    if (close) { close.click(); return false; }
+    return false;
+  }
+
+  async function splitAndSend(sourceCompose, sourceBody, recipients) {
+    let copies = [];
+    let sentCount = 0;
+    try {
+      const subjectInput = sourceCompose.querySelector(
+        'input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]'
+      );
+      const subject = String(subjectInput?.value || '').trim();
+      const bodyHtml = sourceBody.innerHTML;
+
+      // Prepare every individual draft first. Nothing is sent unless all copies are ready.
+      for (const email of recipients) {
+        copies.push({ compose: await createSplitComposer(subject, bodyHtml, email), email });
+      }
+
+      closeSourceDraft(sourceCompose);
+      await delay(350);
+
+      for (const item of copies) {
+        if (!item.compose.isConnected) throw new Error('אחד מחלונות הכתיבה נסגר לפני השליחה.');
+        const sendButton = findComposeSendButton(item.compose);
+        if (!sendButton) throw new Error('לא נמצא כפתור שליחה עבור ' + item.email + '.');
+        splitSendBusy = true;
+        sendButton.click();
+        splitSendBusy = false;
+        const disappeared = await waitForValue(() => !item.compose.isConnected ? true : null, 15000);
+        if (!disappeared) throw new Error('לא ניתן לאשר ש-Gmail סיים את השליחה אל ' + item.email + '. עצרתי כדי למנוע שליחה כפולה.');
+        sentCount++;
+        await delay(350);
+      }
+
+      notify('נשלחו ' + sentCount + ' עותקים נפרדים. לכל נמען נוצר מזהה מעקב משלו.');
+      await getEvents(true);
+      renderListBadges();
+      if (document.getElementById(PANEL_ID)) updatePanelForOpenMessage(true);
+    } catch (error) {
+      notify('הפיצול נעצר אחרי ' + sentCount + ' שליחות. ' + String(error?.message || error) + ' בדוק את תיקיית נשלח ואת הטיוטות לפני ניסיון חוזר.');
+    } finally {
+      splitSendBusy = false;
+      splitOperationActive = false;
+      splitSourceCompose = null;
+    }
+  }
+
   function addPixelAndSaveMessage(button) {
     const workerReady = WORKER_URL.startsWith('https://') && !WORKER_URL.includes('PASTE_');
     if (!workerReady) {
@@ -264,11 +470,17 @@
     );
     const subject = String(subjectInput?.value || '').trim() || '(ללא נושא)';
     const recipients = readRecipients(compose);
+    const recipientNames = [...new Set(
+      [...compose.querySelectorAll('[name="to"] [email],[name="to"] [data-hovercard-id]')]
+        .map((el) => String(el.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+    )];
     const sentAt = new Date().toISOString();
     const record = {
       id,
       subject,
       recipients,
+      recipientNames,
       createdAt: sentAt,
       sentAt
     };
@@ -312,14 +524,27 @@
     return null;
   }
 
-  function handleSendAttempt(target) {
-    const sendControl = findSendControl(target);
-    if (!sendControl) return false;
+  function cancelSendEvent(event) {
+    if (!event) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+  }
 
-    const compose = getComposeFromButton(sendControl);
-    const body = getBodyFromButton(sendControl);
+  function handleComposeSendAttempt(compose, event, pixelContext) {
+    const body = getBodyFromButton(pixelContext || compose);
     if (!body) {
-      notify('זיהיתי את כפתור השליחה, אבל לא מצאתי את גוף ההודעה. לא נוסף פיקסל מעקב.');
+      notify('זיהיתי את השליחה, אבל לא מצאתי את גוף ההודעה. לא נוסף פיקסל מעקב.');
+      return true;
+    }
+
+    if (splitOperationActive && !splitSendBusy && compose === splitSourceCompose) {
+      cancelSendEvent(event);
+      notify('הפיצול כבר מתבצע. המתן לסיום לפני שליחה נוספת.');
+      return true;
+    }
+    if (splitSendBusy) {
+      addPixelAndSaveMessage(pixelContext || compose);
       return true;
     }
     if (body.dataset.readEmailsTracked === '1') {
@@ -327,32 +552,56 @@
       return true;
     }
 
-    addPixelAndSaveMessage(sendControl);
+    const recipients = readRecipients(compose);
+    if (recipients.length > 1) {
+      const blocker = splitBlocker(compose, body);
+      if (blocker) {
+        notify(blocker);
+      } else {
+        const accepted = window.confirm(
+          'זוהו ' + recipients.length + ' נמענים.\n\n' +
+          'לשליחה עם מעקב אישי, הסקריפט ייצור עותק נפרד לכל כתובת וישלח אותם אחד־אחד. ' +
+          'הפיצול האוטומטי כרגע מיועד למיילים ללא קבצים מצורפים, ללא נמעני עותק וללא תמונות מוטמעות.\n\n' +
+          'לבצע שליחה נפרדת לכל נמען?'
+        );
+        if (accepted) {
+          cancelSendEvent(event);
+          splitOperationActive = true;
+          splitSourceCompose = compose;
+          void splitAndSend(compose, body, recipients);
+          return true;
+        }
+      }
+    }
+
+    addPixelAndSaveMessage(pixelContext || compose);
     return true;
   }
 
+  function handleSendAttempt(target, event) {
+    const sendControl = findSendControl(target);
+    if (!sendControl) return false;
+    const compose = getComposeFromButton(sendControl);
+    return handleComposeSendAttempt(compose, event, sendControl);
+  }
+
   function hookSendClicks() {
-    // Try to add the tracking pixel before Gmail processes the send click.
     document.addEventListener('click', (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target) handleSendAttempt(target);
+      if (target) handleSendAttempt(target, event);
     }, true);
 
-    // Also support Gmail's Ctrl+Enter shortcut. The key event target is the editor,
-    // not the send button, so add the pixel directly to that compose draft.
     document.addEventListener('keydown', (event) => {
       if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') return;
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       const editor = target?.closest?.('[contenteditable="true"]');
       if (!editor) return;
-
       const compose = editor.closest('[role="dialog"]') || editor.closest('form');
       if (!compose) {
         notify('קלטתי Ctrl+Enter, אבל לא מצאתי את חלון כתיבת המייל. לא נוסף פיקסל.');
         return;
       }
-      // Use the editor as context; getComposeFromButton will resolve the surrounding compose dialog.
-      addPixelAndSaveMessage(editor);
+      handleComposeSendAttempt(compose, event, editor);
     }, true);
   }
 
@@ -374,6 +623,9 @@
     const byRecipient = candidates.filter((item) =>
       (item.recipients || []).some((recipient) =>
         recipient && rowText.includes(String(recipient).toLocaleLowerCase('he-IL'))
+      ) ||
+      (item.recipientNames || []).some((name) =>
+        name && rowText.includes(String(name).toLocaleLowerCase('he-IL'))
       )
     );
     if (byRecipient.length === 1) return byRecipient[0];
@@ -443,7 +695,9 @@
     renderContextRecord(panel, record);
   }
 
-  function renderContextRecord(panel, record, forceFetch = false) {
+  function renderContextRecord(panel, recordOrRecords, forceFetch = false) {
+    const records = (Array.isArray(recordOrRecords) ? recordOrRecords : [recordOrRecords]).filter(Boolean);
+    if (!records.length) return;
     const requestId = ++hoverUpdateCounter;
     panel.replaceChildren();
 
@@ -451,7 +705,7 @@
     head.className = 're-head';
     const title = document.createElement('div');
     title.className = 're-title';
-    title.textContent = 'פרטי פתיחה';
+    title.textContent = records.length > 1 ? 'פתיחות לפי נמען' : 'פרטי פתיחה';
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 're-close';
@@ -459,11 +713,12 @@
     close.addEventListener('click', () => panel.remove());
     head.append(title, close);
     panel.appendChild(head);
-
-    const subject = document.createElement('div');
-    subject.className = 're-item-title';
-    subject.textContent = record.subject || 'מייל שנשלח';
-    panel.appendChild(subject);
+    if (records.length > 1) {
+      const explanation = document.createElement('p');
+      explanation.className = 're-muted';
+      explanation.textContent = 'נשלחו עותקים נפרדים. נתוני כל נמען מוצגים בנפרד.';
+      panel.appendChild(explanation);
+    }
 
     const status = document.createElement('p');
     status.className = 're-muted';
@@ -474,7 +729,6 @@
     getEvents(forceFetch).then((result) => {
       if (!panel.isConnected || requestId !== hoverUpdateCounter) return;
       status.remove();
-
       if (!result.ok) {
         const error = document.createElement('p');
         error.className = 're-muted';
@@ -483,37 +737,53 @@
         return;
       }
 
-      const allEvents = eventCache.filter((event) => event.id === record.id);
-      const opens = countedEventsForRecord(record)
-        .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
-      const count = document.createElement('p');
-      count.className = 're-muted';
-      count.textContent = opens.length === 0 ? 'לא נרשמה פתיחה' : 'נפתח ' + opens.length;
-      panel.appendChild(count);
+      for (const record of records) {
+        const allEvents = eventCache.filter((event) => event.id === record.id);
+        const opens = countedEventsForRecord(record).sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
+        const item = document.createElement('div');
+        item.className = 're-item';
+        const itemTitle = document.createElement('div');
+        itemTitle.className = 're-item-title';
+        itemTitle.textContent = record.subject || 'מייל שנשלח';
+        item.appendChild(itemTitle);
 
-      // Diagnostics distinguish "no pixel request reached the server" from "a hit was filtered".
-      const diagnostics = document.createElement('p');
-      diagnostics.className = 're-muted';
-      if (allEvents.length > 0 && opens.length === 0) {
-        diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום 30 שניות ההמתנה. אם פתחת את המייל אחרי דקה, צריך לבדוק אם נשלחה בקשת תמונה חדשה.';
-      } else {
-        diagnostics.textContent = 'בקשות תמונת מעקב שנרשמו בשרת: ' + allEvents.length + ' · אירועים שנספרו כפתיחה: ' + opens.length;
-      }
-      panel.appendChild(diagnostics);
+        const recipient = document.createElement('div');
+        recipient.className = 're-muted';
+        const recipientName = (record.recipientNames || []).find((name) => name && !String(name).includes('@'));
+        const recipientText = recipientName || (record.recipients || []).join(', ');
+        recipient.textContent = recipientText ? 'נמען: ' + recipientText : 'נמען לא זוהה';
+        item.appendChild(recipient);
 
-      if (opens.length) {
-        const label = document.createElement('div');
-        label.className = 're-muted';
-        label.textContent = 'זמני הפתיחה שנרשמו:';
-        panel.appendChild(label);
-        opens.slice(0, 12).forEach((event) => {
-          const line = document.createElement('div');
-          line.className = 're-time';
-          const date = new Date(event.openedAt);
-          line.textContent = Number.isNaN(date.getTime()) ? 'זמן לא ידוע' : date.toLocaleString('he-IL');
-          panel.appendChild(line);
-        });
+        const count = document.createElement('p');
+        count.className = 're-muted';
+        count.textContent = opens.length === 0 ? 'לא נרשמה פתיחה' : 'נפתח ' + opens.length;
+        item.appendChild(count);
+
+        const diagnostics = document.createElement('p');
+        diagnostics.className = 're-muted';
+        if (allEvents.length > 0 && opens.length === 0) {
+          diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום 30 שניות ההמתנה.';
+        } else {
+          diagnostics.textContent = 'בקשות תמונת מעקב שנרשמו בשרת: ' + allEvents.length + ' · אירועים שנספרו כפתיחה: ' + opens.length;
+        }
+        item.appendChild(diagnostics);
+
+        if (opens.length) {
+          const label = document.createElement('div');
+          label.className = 're-muted';
+          label.textContent = 'זמני הפתיחה שנרשמו:';
+          item.appendChild(label);
+          opens.slice(0, 12).forEach((event) => {
+            const line = document.createElement('div');
+            line.className = 're-time';
+            const date = new Date(event.openedAt);
+            line.textContent = Number.isNaN(date.getTime()) ? 'זמן לא ידוע' : date.toLocaleString('he-IL');
+            item.appendChild(line);
+          });
+        }
+        panel.appendChild(item);
       }
+
       const note = document.createElement('p');
       note.className = 're-muted';
       note.textContent = 'בקשות שנרשמו ב־30 השניות הראשונות אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
@@ -624,11 +894,11 @@
     });
   }
 
-  function getOpenSentRecord() {
-    if (!isSentFolder()) return null;
+  function getOpenSentRecords() {
+    if (!isSentFolder()) return [];
     const subjectNode = document.querySelector('h2.hP, h2[data-thread-perm-id]');
     const subject = normalizeSubject(subjectNode?.textContent || subjectNode?.innerText || '');
-    if (!subject) return null;
+    if (!subject) return [];
 
     const tracked = getTrackedMessages();
     const visibleIds = new Set();
@@ -636,21 +906,21 @@
       const id = extractTrackingId(img);
       if (id) visibleIds.add(id);
     });
-    const directMatch = tracked.find((item) => visibleIds.has(item.id));
-    if (directMatch) return directMatch;
+    const directMatches = tracked.filter((item) => visibleIds.has(item.id));
+    if (directMatches.length) return directMatches;
 
     const subjectMatches = tracked.filter((item) => normalizeSubject(item.subject) === subject);
-    return subjectMatches.length === 1 ? subjectMatches[0] : null;
+    return subjectMatches.length === 1 ? subjectMatches : [];
   }
 
   function updatePanelForOpenMessage(refreshSameRecord = false) {
     const panel = document.getElementById(PANEL_ID);
     if (!panel || !isSentFolder()) return;
-    const record = getOpenSentRecord();
-    if (record && (activeRecord?.id !== record.id || refreshSameRecord)) {
+    const records = getOpenSentRecords();
+    if (records.length && (activeRecord?.id !== records[0].id || refreshSameRecord)) {
       activeRow = null;
-      activeRecord = record;
-      renderContextRecord(panel, record, false);
+      activeRecord = records[0];
+      renderContextRecord(panel, records, false);
     }
   }
 
@@ -703,11 +973,11 @@
       return;
     }
     const panel = createPanel();
-    const record = getOpenSentRecord();
-    if (record) {
-      activeRecord = record;
+    const records = getOpenSentRecords();
+    if (records.length) {
+      activeRecord = records[0];
       activeRow = null;
-      renderContextRecord(panel, record, true);
+      renderContextRecord(panel, records, true);
     } else {
       const message = panel.querySelector('.re-muted');
       if (message) message.textContent = 'פתח מייל מתוך תיקיית „נשלח” כדי לראות כאן את מספר הפתיחות ואת הזמנים שלו.';
