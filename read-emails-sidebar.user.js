@@ -351,8 +351,11 @@
         el.getAttribute('data-tooltip') || '',
         el.getAttribute('title') || ''
       ].join(' ').toLowerCase());
-    if (attachmentLabels.some((label) => /remove attachment|attachment:|קובץ מצורף|הסר קובץ|הסרת קובץ|הסרת הקובץ/.test(label)) ||
-        compose.querySelector('.aZo,.aQH .aZo')) {
+    const hasAttachmentEvidence =
+      compose.querySelector('.aZo,.aQH .aZo,[data-tooltip*="Remove attachment"],[aria-label*="Remove attachment"],' +
+        '[data-tooltip*="הסר קובץ"],[aria-label*="הסר קובץ"],[data-tooltip*="מצורף"],[aria-label*="מצורף"]') ||
+      attachmentLabels.some((label) => /remove attachment|attachment:|\b\d+(?:\.\d+)?\s*(?:kb|mb|gb)\b|קובץ מצורף|הסר קובץ|הסרת קובץ|הסרת הקובץ|\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|png|jpe?g|gif|txt)(?:\s|$)/.test(label));
+    if (hasAttachmentEvidence) {
       return 'פיצול אוטומטי לא תומך כרגע בקבצים מצורפים. המייל יישלח כרגיל עם מעקב משותף.';
     }
     return '';
@@ -371,21 +374,17 @@
     return newCompose;
   }
 
-  function closeSourceDraft(compose) {
+  async function discardDraft(compose) {
     const controls = [...compose.querySelectorAll('button,[role="button"],[aria-label],[data-tooltip],[title]')];
     const discard = controls.find((el) => {
       const label = [el.getAttribute('aria-label') || '', el.getAttribute('data-tooltip') || '',
         el.getAttribute('title') || '', el.textContent || ''].join(' ').toLowerCase();
       return /discard draft|השלך טיוטה|השלכת טיוטה|מחיקת טיוטה/.test(label);
     });
-    if (discard) { discard.click(); return true; }
-    const close = controls.find((el) => {
-      const label = [el.getAttribute('aria-label') || '', el.getAttribute('data-tooltip') || '',
-        el.getAttribute('title') || ''].join(' ').toLowerCase();
-      return /^(close|סגירה|סגור)$/.test(label.trim());
-    });
-    if (close) { close.click(); return false; }
-    return false;
+    // Never merely close the original multi-recipient draft: Gmail saves it in Drafts.
+    if (!discard) return false;
+    discard.click();
+    return Boolean(await waitForValue(() => !compose.isConnected ? true : null, 5000));
   }
 
   async function splitAndSend(sourceCompose, sourceBody, recipients) {
@@ -403,7 +402,10 @@
         copies.push({ compose: await createSplitComposer(subject, bodyHtml, email), email });
       }
 
-      closeSourceDraft(sourceCompose);
+      const sourceDiscarded = await discardDraft(sourceCompose);
+      if (!sourceDiscarded) {
+        throw new Error('לא הצלחתי לאמת שהטיוטה המקורית נמחקה. לכן לא שלחתי אף עותק. אם נוצרו טיוטות נוספות, בדוק ומחק אותן ידנית לפני ניסיון חוזר.');
+      }
       await delay(350);
 
       for (const item of copies) {
@@ -554,7 +556,10 @@
 
     const recipients = readRecipients(compose);
     if (recipients.length > 1) {
-      const blocker = splitBlocker(compose, body);
+      const malformedRecipient = recipients.some((email) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email));
+      const blocker = malformedRecipient
+        ? 'לא הצלחתי לזהות בוודאות את כל כתובות הנמענים. לא פיצלתי את המייל; השליחה תמשיך כרגיל עם מעקב משותף.'
+        : splitBlocker(compose, body);
       if (blocker) {
         notify(blocker);
       } else {
