@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.6
+// @version      0.3.7
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -438,8 +438,8 @@
   }
 
   async function splitAndSend(sourceCompose, sourceBody, recipients) {
-    let copies = [];
     let sentCount = 0;
+    let currentCopy = null;
     try {
       const subjectInput = sourceCompose.querySelector(
         'input[name="subjectbox"],input[placeholder*="נושא"],input[placeholder*="Subject"]'
@@ -447,36 +447,65 @@
       const subject = String(subjectInput?.value || '').trim();
       const bodyHtml = sourceBody.innerHTML;
 
-      // Prepare every individual draft first. Nothing is sent unless all copies are ready.
-      for (const email of recipients) {
-        copies.push({ compose: await createSplitComposer(subject, bodyHtml, email), email });
+      // Validate the first copy before changing the original draft.
+      currentCopy = {
+        compose: await createSplitComposer(subject, bodyHtml, recipients[0]),
+        email: recipients[0]
+      };
+      if (!findComposeSendButton(currentCopy.compose)) {
+        await discardDraft(currentCopy.compose);
+        currentCopy = null;
+        throw new Error('לא נמצא כפתור שליחה בחלון העותק הראשון. הטיוטה המקורית נשארה ללא שינוי.');
+      }
+
+      // Keep the original draft until every individual copy has been sent, so a failure
+      // does not destroy the user's only complete draft.
+      for (let index = 0; index < recipients.length; index++) {
+        const email = recipients[index];
+        if (index > 0) {
+          currentCopy = {
+            compose: await createSplitComposer(subject, bodyHtml, email),
+            email
+          };
+        }
+
+        if (!currentCopy.compose.isConnected) {
+          throw new Error('חלון הכתיבה עבור ' + email + ' נסגר לפני השליחה.');
+        }
+        const sendButton = findComposeSendButton(currentCopy.compose);
+        if (!sendButton) {
+          if (sentCount === 0) {
+            await discardDraft(currentCopy.compose);
+            currentCopy = null;
+          }
+          throw new Error('לא נמצא כפתור שליחה עבור ' + email + '.');
+        }
+
+        splitSendBusy = true;
+        sendButton.click();
+        splitSendBusy = false;
+
+        const composeBeingSent = currentCopy.compose;
+        const disappeared = await waitForValue(() => !composeBeingSent.isConnected ? true : null, 15000);
+        if (!disappeared) {
+          throw new Error('לא ניתן לאשר ש-Gmail סיים את השליחה אל ' + email + '. עצרתי כדי למנוע שליחה כפולה.');
+        }
+        sentCount++;
+        currentCopy = null;
+        await delay(350);
       }
 
       const sourceDiscarded = await discardDraft(sourceCompose);
       if (!sourceDiscarded) {
-        throw new Error('לא הצלחתי לאמת שהטיוטה המקורית נמחקה. לכן לא שלחתי אף עותק. אם נוצרו טיוטות נוספות, בדוק ומחק אותן ידנית לפני ניסיון חוזר.');
-      }
-      await delay(350);
-
-      for (const item of copies) {
-        if (!item.compose.isConnected) throw new Error('אחד מחלונות הכתיבה נסגר לפני השליחה.');
-        const sendButton = findComposeSendButton(item.compose);
-        if (!sendButton) throw new Error('לא נמצא כפתור שליחה עבור ' + item.email + '.');
-        splitSendBusy = true;
-        sendButton.click();
-        splitSendBusy = false;
-        const disappeared = await waitForValue(() => !item.compose.isConnected ? true : null, 15000);
-        if (!disappeared) throw new Error('לא ניתן לאשר ש-Gmail סיים את השליחה אל ' + item.email + '. עצרתי כדי למנוע שליחה כפולה.');
-        sentCount++;
-        await delay(350);
+        throw new Error('נשלחו כל העותקים, אבל לא הצלחתי לסגור את הטיוטה המקורית. בדוק את הטיוטות ומחק את הטיוטה המקורית כדי למנוע שליחה כפולה.');
       }
 
-      notify('נשלחו ' + sentCount + ' עותקים נפרדים. לכל נמען נוצר מזהה מעקב משלו.');
+      notify('נשלחו ' + sentCount + ' עותקים נפרדים, אחד בכל פעם. לכל נמען נוצר מזהה מעקב משלו.');
       await getEvents(true);
       renderListBadges();
       if (document.getElementById(PANEL_ID)) updatePanelForOpenMessage(true);
     } catch (error) {
-      notify('הפיצול נעצר אחרי ' + sentCount + ' שליחות. ' + String(error?.message || error) + ' בדוק את תיקיית נשלח ואת הטיוטות לפני ניסיון חוזר.');
+      notify('הפיצול נעצר אחרי ' + sentCount + ' שליחות. ' + String(error?.message || error) + ' הטיוטה המקורית נשמרת עד להשלמת הפיצול; בדוק את תיקיית נשלח ואת הטיוטות לפני ניסיון חוזר.');
     } finally {
       splitSendBusy = false;
       splitOperationActive = false;
