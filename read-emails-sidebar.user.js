@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.7
+// @version      0.3.8
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -102,7 +102,7 @@
         resolve({ ok: true, events: eventCache });
         return;
       }
-      if (!force && Date.now() - lastFetch < 30000) {
+      if (!force && Date.now() - lastFetch < 120000) {
         resolve({ ok: true, events: eventCache });
         return;
       }
@@ -1124,7 +1124,7 @@
   observer.observe(document.documentElement, { childList: true, subtree: true });
   hookSendClicks();
   refresh();
-  setInterval(refresh, 30000);
+  setInterval(refresh, 120000);
   notify(
     WORKER_URL.startsWith('https://') && !WORKER_URL.includes('PASTE_')
       ? 'סקריפט Read-emails המאוחד נטען. אפשר לשלוח מייל בדיקה.'

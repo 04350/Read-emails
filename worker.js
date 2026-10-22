@@ -40,8 +40,12 @@ export default {
       if (!/^[a-f0-9-]{20,80}$/i.test(id)) return new Response(PIXEL, { headers: { "Content-Type": "image/gif", "Cache-Control": "no-store" } });
       if (env.TRACKING_KV) {
         const key = `open:${id}:${Date.now()}:${crypto.randomUUID()}`;
-        const event = { id, openedAt: new Date().toISOString(), userAgent: (request.headers.get("user-agent") || "").slice(0, 240) };
-        await env.TRACKING_KV.put(key, JSON.stringify(event), { expirationTtl: 60 * 60 * 24 * 365 });
+        const event = { id, openedAt: new Date().toISOString(), userAgent: (request.headers.get("user-agent") || "").slice(0, 100) };
+        // Keep a small copy in metadata, which is returned by list() and avoids one KV read per event.
+        await env.TRACKING_KV.put(key, JSON.stringify(event), {
+          expirationTtl: 60 * 60 * 24 * 365,
+          metadata: { event }
+        });
       }
       return new Response(PIXEL, { headers: { "Content-Type": "image/gif", "Content-Length": String(PIXEL.length), "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" } });
     }
@@ -58,6 +62,11 @@ export default {
             do {
               const page = await env.TRACKING_KV.list({ prefix: "open:", limit: 1000, cursor });
               for (const item of page.keys) {
+                // New keys carry event data in metadata. Legacy keys fall back to their value.
+                if (item.metadata && item.metadata.event && item.metadata.event.id && item.metadata.event.openedAt) {
+                  events.push(item.metadata.event);
+                  continue;
+                }
                 const raw = await env.TRACKING_KV.get(item.name);
                 if (raw) { try { events.push(JSON.parse(raw)); } catch {} }
               }
