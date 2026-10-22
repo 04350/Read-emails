@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.4
+// @version      0.3.5
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -17,11 +17,14 @@
 (() => {
   'use strict';
 
-  // יש להגדיר כאן את כתובת ה-Worker ואת אותו DASHBOARD_TOKEN שהוגדר ב-Cloudflare.
-  // אין לשמור בקובץ ציבורי את הטוקן האישי; הכנס אותו רק בעותק המקומי ב-Tampermonkey.
+  // The dashboard token is stored locally in Tampermonkey, never in this public file.
   const WORKER_URL = 'https://royal-sun-b560.m67331222.workers.dev';
-  const DASHBOARD_TOKEN = 'QWERTYUIOPASDFGHJKLZXCVBNM123456';
-  // Tracking pixels only require WORKER_URL. The sidebar's private event panel also requires DASHBOARD_TOKEN.
+  const TOKEN_STORAGE_KEY = 'readEmailsDashboardToken';
+  function getDashboardToken() {
+    try { return String(GM_getValue(TOKEN_STORAGE_KEY, '') || '').trim(); }
+    catch { return ''; }
+  }
+  // Tracking pixels only require WORKER_URL. Viewing events requires a private locally stored token.
 
   const STYLE_ID = 'read-emails-sidebar-styles';
   const BUTTON_ID = 'read-emails-sidebar-button';
@@ -44,8 +47,7 @@
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
     !WORKER_URL.includes('PASTE_') &&
-    DASHBOARD_TOKEN &&
-    !DASHBOARD_TOKEN.includes('PASTE_');
+    Boolean(getDashboardToken());
 
   function addStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -93,7 +95,7 @@
     return new Promise((resolve) => {
       if (!configured()) {
         eventsState = 'error';
-        resolve({ ok: false, error: 'יש להגדיר WORKER_URL ואת DASHBOARD_TOKEN בקוד הסקריפט.' });
+        resolve({ ok: false, error: 'יש להגדיר את קוד הגישה דרך תפריט Tampermonkey של הסקריפט.' });
         return;
       }
       if (fetchInProgress) {
@@ -108,7 +110,7 @@
       GM_xmlhttpRequest({
         method: 'GET',
         url: WORKER_URL.replace(/\/$/, '') + '/events',
-        headers: { Authorization: 'Bearer ' + DASHBOARD_TOKEN },
+        headers: { Authorization: 'Bearer ' + getDashboardToken() },
         onload: (response) => {
           fetchInProgress = false;
           lastFetch = Date.now();
@@ -1057,6 +1059,31 @@
     renderListBadges();
     updatePanelForOpenMessage(true);
   }
+
+  GM_registerMenuCommand('הגדרת / החלפת קוד גישה לשרת', () => {
+    const entered = window.prompt(
+      'הדבק כאן את DASHBOARD_TOKEN החדש שהגדרת ב-Cloudflare.\\nהקוד נשמר מקומית ב-Tampermonkey ואינו נשמר בקובץ GitHub.'
+    );
+    if (entered === null) return;
+    const token = entered.trim();
+    if (!token) {
+      notify('לא הוזן קוד גישה. לא בוצע שינוי.');
+      return;
+    }
+    GM_setValue(TOKEN_STORAGE_KEY, token);
+    eventCache = [];
+    lastFetch = 0;
+    eventsState = 'loading';
+    notify('קוד הגישה נשמר מקומית. בודק חיבור לשרת…');
+    getEvents(true).then((result) => {
+      if (result.ok) {
+        notify('קוד הגישה תקין והשרת נגיש.');
+        refresh();
+      } else {
+        notify('הקוד נשמר מקומית, אבל הבדיקה נכשלה: ' + result.error);
+      }
+    });
+  });
 
   // Gmail redraws its interface dynamically, so re-check the page as it changes.
   const observer = new MutationObserver(() => {
