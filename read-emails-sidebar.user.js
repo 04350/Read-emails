@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read-emails — תצוגת פתיחות בתוך Gmail
 // @namespace    https://github.com/04350/Read-emails
-// @version      0.3.5
+// @version      0.3.6
 // @updateURL    https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @downloadURL  https://raw.githubusercontent.com/04350/Read-emails/main/read-emails-sidebar.user.js
 // @description  סקריפט מאוחד: הוספת פיקסל מעקב והצגת פתיחות בעברית ב-Gmail
@@ -42,7 +42,7 @@
   let splitSendBusy = false;
   let splitOperationActive = false;
   let splitSourceCompose = null;
-  const AUTO_SCAN_GRACE_MS = 30 * 1000; // Suppress likely immediate security-scanner fetches.
+  const AUTO_SCAN_GRACE_MS = 10 * 1000; // Suppress likely immediate security-scanner fetches.
 
   const configured = () =>
     WORKER_URL.startsWith('https://') &&
@@ -168,7 +168,7 @@
     if (!Number.isFinite(sentAt)) return events;
 
     // Only records created at send-time have sentAt. For these, ignore all events
-    // earlier than the local send click as well as events in the following 30 seconds.
+    // earlier than the local send click as well as events in the following 10 seconds.
     // A pixel request can arrive just before the metadata is saved; that negative age
     // is a strong sign of an immediate proxy/scanner fetch, not proof of a human opening.
     if (!record.sentAt) return events; // Legacy records have no trustworthy send-time.
@@ -828,7 +828,7 @@
         const diagnostics = document.createElement('p');
         diagnostics.className = 're-muted';
         if (allEvents.length > 0 && opens.length === 0) {
-          diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום 30 שניות ההמתנה.';
+          diagnostics.textContent = 'השרת קיבל ' + allEvents.length + ' בקשות לתמונה, אך כולן סוננו כי נרשמו לפני תום 10 שניות ההמתנה.';
         } else {
           diagnostics.textContent = 'בקשות תמונת מעקב שנרשמו בשרת: ' + allEvents.length + ' · אירועים שנספרו כפתיחה: ' + opens.length;
         }
@@ -852,7 +852,7 @@
 
       const note = document.createElement('p');
       note.className = 're-muted';
-      note.textContent = 'בקשות שנרשמו ב־30 השניות הראשונות אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
+      note.textContent = 'בקשות שנרשמו ב־10 השניות הראשונות אחרי השליחה אינן נספרות, כדי לצמצם סימוני פתיחה אוטומטיים. סריקות מאוחרות יותר עדיין עלולות להירשם.';
       panel.appendChild(note);
     });
   }
