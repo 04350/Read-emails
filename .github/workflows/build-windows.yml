@@ -55,6 +55,16 @@ jobs:
           if (!(Test-Path "dist/HamitkonimSheli.exe")) { throw "EXE was not created" }
           Get-Item "dist/HamitkonimSheli.exe" | Format-List Name,Length,LastWriteTime
 
+      - name: Smoke test startup
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/HamitkonimSheli.exe" -PassThru
+          Start-Sleep -Seconds 6
+          $process.Refresh()
+          if ($process.HasExited) { throw "The EXE exited during its startup smoke test." }
+          Stop-Process -Id $process.Id -Force
+          Write-Host "GUI process remained alive during startup smoke test."
+
       - name: Upload ready EXE
         uses: actions/upload-artifact@v4
         with:
