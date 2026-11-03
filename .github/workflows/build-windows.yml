@@ -32,7 +32,7 @@ jobs:
           $outputStream.Dispose()
           $gzip.Dispose()
           $inputStream.Dispose()
-          python -m py_compile תוכנת מתכונים/recipes_app.py
+          python -m py_compile "תוכנת מתכונים/recipes_app.py"
 
       - name: Install offline runtime libraries
         run: |
@@ -47,7 +47,7 @@ jobs:
           --collect-all tkinterdnd2
           --hidden-import striprtf.striprtf
           --hidden-import docx
-          תוכנת מתכונים/recipes_app.py
+          "תוכנת מתכונים/recipes_app.py"
 
       - name: Verify executable exists
         shell: pwsh
