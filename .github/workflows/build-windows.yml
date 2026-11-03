@@ -23,16 +23,16 @@ jobs:
       - name: Restore application source
         shell: pwsh
         run: |
-          $encoded = Get-Content "src/recipes_app.py.gz.b64" -Raw
+          $encoded = Get-Content "תוכנת מתכונים/recipes_app.py.gz.b64" -Raw
           $bytes = [Convert]::FromBase64String($encoded)
           $inputStream = [System.IO.MemoryStream]::new($bytes)
           $gzip = [System.IO.Compression.GzipStream]::new($inputStream, [System.IO.Compression.CompressionMode]::Decompress)
-          $outputStream = [System.IO.File]::Create("src/recipes_app.py")
+          $outputStream = [System.IO.File]::Create("תוכנת מתכונים/recipes_app.py")
           $gzip.CopyTo($outputStream)
           $outputStream.Dispose()
           $gzip.Dispose()
           $inputStream.Dispose()
-          python -m py_compile src/recipes_app.py
+          python -m py_compile תוכנת מתכונים/recipes_app.py
 
       - name: Install offline runtime libraries
         run: |
@@ -47,7 +47,7 @@ jobs:
           --collect-all tkinterdnd2
           --hidden-import striprtf.striprtf
           --hidden-import docx
-          src/recipes_app.py
+          תוכנת מתכונים/recipes_app.py
 
       - name: Verify executable exists
         shell: pwsh
